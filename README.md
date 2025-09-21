@@ -1,4 +1,4 @@
-# ISCSI CSI driver for Kubernetes
+# ISCSI CSI driver for Windows File Storage Server iSCSI
 
 ### Overview
 

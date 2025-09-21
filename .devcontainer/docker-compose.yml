@@ -1,4 +1,4 @@
-name: mcp-server
+name: csi-driver-iscsi-for-windows
 
 services:
   devcontainer:
@@ -10,6 +10,7 @@ services:
     env_file: ./.env.devcontainer
     volumes:
       - ..:/workspace/:cached
+      - /var/run/docker.sock:/var/run/docker.sock # Share Docker socket
       - go-mod-cache:/go/pkg/mod           # Module cache (persistent)
       - go-build-cache:/home/vscode/.cache/go-build
       - root-go-build-cache:/root/.cache/go-build

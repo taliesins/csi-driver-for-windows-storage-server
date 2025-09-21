@@ -49,7 +49,6 @@ coverage.*
 *.prof
 
 # --- Build Output & Binaries ---
-/bin
 /build
 /dist
 cache
