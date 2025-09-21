@@ -1,0 +1,38 @@
+name: Create Release Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: 'Preview the next version and changelog without creating a tag'
+        required: false
+        default: 'false'
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed for creating tags on a real release
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Run GoReleaser
+        # For a dry run, we use 'changelog' to only print the release notes.
+        # For a real run, we use 'release' to create the tag and trigger the CI build.
+        run: |
+          if [[ "${{ inputs.dryRun }}" == "true" ]]; then
+            goreleaser changelog
+          else
+            goreleaser release --clean --skip-build --skip-publish
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

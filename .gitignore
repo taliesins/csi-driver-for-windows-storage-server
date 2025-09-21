@@ -1,2 +1,54 @@
-/bin
-.idea
+# GoLand IDE files
+.idea/
+*.iml
+
+# Go build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace file
+go.work
+
+# Go vendor directory (if not using Go modules)
+vendor/
+
+# Test binary, build cache, and coverage files
+*.test
+*.out
+*.cover
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+*.orig
+*.rej
+*.~
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Python files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg
+*.egg-info/
+dist/
+build/
+.env
+.venv
+venv/

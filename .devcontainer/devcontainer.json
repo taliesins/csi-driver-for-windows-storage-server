@@ -1,0 +1,45 @@
+{
+    "name": "Go Dev Container",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devcontainer",
+    //"features": {
+    //"ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    //},
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-azuretools.vscode-docker",
+                "vivaxy.vscode-conventional-commits",
+                "exiasr.hadolint",
+                "ms-azuretools.vscode-docker",
+                "redhat.vscode-yaml",
+                "shardulm94.trailing-spaces",
+                "tamasfe.even-better-toml",
+                "yzhang.markdown-all-in-one",
+                "esbenp.prettier-vscode",
+                "streetsidesoftware.code-spell-checker",
+                "bierner.markdown-mermaid",
+                // required:
+                "golang.go",
+                "bradymholt.pgformatter",
+                // optional:
+                "42crunch.vscode-openapi",
+                "heaths.vscode-guid",
+                "casualjim.gotemplate",
+                "ms-vscode.makefile-tools"
+            ],
+            // Suppress the dev container notification
+            "settings": {
+                "dev.containers.showWelcomeNotification": false
+            }
+        }
+    },
+    "initializeCommand": "bash .devcontainer/initialize-command.sh -w '${localWorkspaceFolder}'",
+    "postCreateCommand": "bash .devcontainer/post-create.sh -w '${localWorkspaceFolder}'",
+    "postStartCommand": "bash .devcontainer/post-start.sh -w '${localWorkspaceFolder}'",
+    "workspaceFolder": "/workspace", // Set to where your code mounts
+    "remoteUser": "vscode",
+    "forwardPorts": [
+        8080
+    ]
+}

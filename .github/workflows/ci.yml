@@ -1,0 +1,245 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.goreleaser.yml'
+      - 'chart/**'
+      - '.pre-commit-config.yaml'
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.goreleaser.yml'
+      - 'chart/**'
+      - '.pre-commit-config.yaml'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: taliesins/csi-driver-iscsi-for-windows
+
+jobs:
+  lint:
+    if: |
+      !startsWith(github.ref, 'refs/tags/v') &&
+      !(
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+        startsWith(github.event.head_commit.message, 'chore(release):')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.3'
+
+      - name: Install yamllint
+        run: pip install yamllint=='1.29.0'
+
+      - name: Install shfmt
+        env:
+          SHFMT_VERSION: v3.8.0
+        run: |
+          sudo wget -O /usr/local/bin/shfmt "https://github.com/mvdan/sh/releases/download/${{ env.SHFMT_VERSION }}/shfmt_${{ env.SHFMT_VERSION }}_linux_amd64"
+          sudo chmod +x /usr/local/bin/shfmt
+
+      - name: Install shellcheck
+        env:
+          SHELLCHECK_VERSION: stable
+        run: |
+          sudo wget -qO- "https://github.com/koalaman/shellcheck/releases/download/${{ env.SHELLCHECK_VERSION }}/shellcheck-${{ env.SHELLCHECK_VERSION }}.linux.x86_64.tar.xz" | sudo tar -xJ -C /usr/local/bin --strip-components=1 shellcheck-${{ env.SHELLCHECK_VERSION }}/shellcheck
+
+      - name: Install hadolint
+        env:
+          HADOLINT_VERSION: v2.12.0
+        run: |
+          wget -O /usr/local/bin/hadolint "https://github.com/hadolint/hadolint/releases/download/${{ env.HADOLINT_VERSION }}/hadolint-Linux-x86_64"
+          sudo chmod +x /usr/local/bin/hadolint
+
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_LINT_VERSION: v2.2.1
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin ${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install goimports
+        env:
+          GOIMPORTS_VERSION: v0.34.0
+        run: go install golang.org/x/tools/cmd/goimports@${{ env.GOIMPORTS_VERSION }}
+
+      - name: Cache pre-commit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit|${{ runner.os }}|${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Run pre-commit
+        uses: pre-commit/action@v3.0.1
+
+  unit-tests:
+    if: |
+      !failure() &&
+      !cancelled() &&
+      !startsWith(github.ref, 'refs/tags/v') &&
+      !(
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+        startsWith(github.event.head_commit.message, 'chore(release):')
+      )
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      - name: Run Go tests
+        run: go test -v ./...
+
+  build-and-release:
+    if: |
+      !failure() &&
+      !cancelled() &&
+      !(
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+        startsWith(github.event.head_commit.message, 'chore(release):')
+      )
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    permissions:
+      contents: write
+      packages: write
+      id-token: write # Required for keyless signing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry for Docker
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry for Helm
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Determine Versions
+        id: get_version
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "CONTAINER_TAG=${TAG_VERSION}" >> $GITHUB_ENV
+            echo "CONTAINER_MUTABLE_TAG=latest" >> $GITHUB_ENV
+            echo "HELM_VERSION=${TAG_VERSION}" >> $GITHUB_ENV
+            echo "HELM_MUTABLE_VERSION=latest" >> $GITHUB_ENV
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            echo "CONTAINER_TAG=pr-${PR_NUMBER}.${SHORT_SHA}" >> $GITHUB_ENV
+            echo "CONTAINER_MUTABLE_TAG=pr-${PR_NUMBER}" >> $GITHUB_ENV
+            echo "HELM_VERSION=0.0.0-pr${PR_NUMBER}.${SHORT_SHA}" >> $GITHUB_ENV
+            echo "HELM_MUTABLE_VERSION=0.0.0-pr${PR_NUMBER}" >> $GITHUB_ENV
+          else
+            echo "CONTAINER_TAG=dev-${SHORT_SHA}" >> $GITHUB_ENV
+            echo "CONTAINER_MUTABLE_TAG=dev" >> $GITHUB_ENV
+            echo "HELM_VERSION=0.0.0-dev.${SHORT_SHA}" >> $GITHUB_ENV
+            echo "HELM_MUTABLE_VERSION=0.0.0-dev" >> $GITHUB_ENV
+          fi
+
+      - name: Run GoReleaser in snapshot mode
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.10.2
+          args: release --clean --snapshot
+        env:
+          CONTAINER_TAG: ${{ env.CONTAINER_TAG }}
+          CONTAINER_MUTABLE_TAG: ${{ env.CONTAINER_MUTABLE_TAG }}
+          HELM_VERSION: ${{ env.HELM_VERSION }}
+          HELM_MUTABLE_VERSION: ${{ env.HELM_MUTABLE_VERSION }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run GoReleaser in release mode
+        if: "startsWith(github.ref, 'refs/tags/v')"
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2.10.2
+          args: release --clean
+        env:
+          CONTAINER_TAG: ${{ env.CONTAINER_TAG }}
+          CONTAINER_MUTABLE_TAG: ${{ env.CONTAINER_MUTABLE_TAG }}
+          HELM_VERSION: ${{ env.HELM_VERSION }}
+          HELM_MUTABLE_VERSION: ${{ env.HELM_MUTABLE_VERSION }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Container Images to Registry
+        if: success()
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CONTAINER_TAG }}" \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CONTAINER_MUTABLE_TAG }}" \
+            --push \
+            .
+
+      - name: Push Helm Charts to OCI Registry
+        if: success()
+        run: |
+          for chart in ./chart/dist/*.tgz; do
+            helm push "$chart" oci://ghcr.io/taliesins/helm
+          done

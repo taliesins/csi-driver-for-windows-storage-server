@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-wal-raw
+  namespace: apps
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: iscsi-for-windows-rwo
+  volumeMode: Block
+  resources:
+    requests:
+      storage: 50Gi

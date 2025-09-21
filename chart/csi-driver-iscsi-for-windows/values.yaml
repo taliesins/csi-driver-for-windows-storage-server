@@ -1,0 +1,27 @@
+# Controller-specific ServiceAccount
+controller:
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
+
+# Node-specific ServiceAccount
+node:
+  serviceAccount:
+    create: true
+    automount: true
+    annotations: {}
+    name: ""
+
+# Default values for csi-driver-iscsi-for-windows
+image:
+  repository: ghcr.io/taliesins/csi-driver-iscsi-for-windows
+  pullPolicy: IfNotPresent
+  tag: ""
+
+nameOverride: ""
+fullnameOverride: ""
+
+# If you need to pull images from a private registry, set this
+imagePullSecrets: []

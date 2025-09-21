@@ -2,10 +2,33 @@
 
 ### Overview
 
-This is a repository for iscsi [CSI](https://kubernetes-csi.github.io/docs/)
-driver, csi plugin name: `iscsi.csi.k8s.io`. This driver requires existing and
-already configured iscsi server, it could dynamically attach/mount,
-detach/unmount based on CSI GRPC calls.
+This is a repository for iscsi for windows CSI driver, csi plugin name: `iscsi.csi.windows.microsoft.com`. It can dynamically create/resize/delete, snapshot/restore from snapshot, attach/mount, detach/unmount iSCSI volumes.
+
+This driver requires a Windows Server with Storage Server setup to support iSCSI.
+
+Essentials (File & Storage, iSCSI Target, iSCI Initiator)
+```
+# Install core roles/features
+Install-WindowsFeature -Name `
+  FS-FileServer, `         # File Server
+  Storage-Services, `      # Storage management service
+  FS-iSCSITarget-Server, ` # iSCSI Target Server
+  MSiSCSI `                # Microsoft iSCSI Initiator service
+  -IncludeManagementTools -Verbose
+```
+
+Optional: Mulipath IO (recommended if you’ll expose multiple target paths)
+```
+Install-WindowsFeature -Name Multipath-IO -IncludeManagementTools -Verbose
+```
+
+Verify
+```
+Get-WindowsFeature FS-FileServer,Storage-Services,FS-iSCSITarget-Server,MSiSCSI,Multipath-IO |
+  Format-Table DisplayName, Name, InstallState
+```
+
+
 
 ### Project status: Alpha
 
@@ -29,19 +52,6 @@ Please refer to [development guide](./docs/csi-dev.md)
 
 ## Community, discussion, contribution, and support
 
-Learn how to engage with the Kubernetes community on
-the [community page](http://kubernetes.io/community/).
-
 You can reach the maintainers of this project at:
 
-- [Slack channel](https://kubernetes.slack.com/messages/sig-storage)
-- [Mailing list](https://groups.google.com/forum/#!forum/kubernetes-sig-storage)
-
-### Code of conduct
-
-Participation in the Kubernetes community is governed by
-the [Kubernetes Code of Conduct](code-of-conduct.md).
-
-[owners]: https://git.k8s.io/community/contributors/guide/owners.md
-
-[Creative Commons 4.0]: https://git.k8s.io/website/LICENSE
+- [Github](https://github.com/taliesins/csi-driver-iscsi-for-windows/issues)

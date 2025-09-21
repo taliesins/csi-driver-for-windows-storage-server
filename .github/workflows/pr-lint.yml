@@ -1,0 +1,30 @@
+name: PR Title Lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  lint-pr-title:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        with:
+          types: |
+            feat
+            fix
+            chore
+            docs
+            refactor
+            test
+            style
+            perf
+          subjectPattern: ^((bump)|[A-Z]).+$
+          subjectPatternError: |
+            The PR title must follow the conventional commits format (e.g., 'feat: Add new feature', 'fix: Resolve bug').
+            Allowed types: feat, fix, chore, docs, refactor, test, style, perf.
+            The subject must start with a capital letter.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

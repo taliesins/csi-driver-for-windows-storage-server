@@ -20,7 +20,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/kubernetes-csi/csi-driver-iscsi/pkg/iscsi"
+	"github.com/taliesins/csi-driver-iscsi-for-windows/pkg/iscsi"
 	klog "k8s.io/klog/v2"
 )
 

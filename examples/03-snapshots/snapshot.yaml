@@ -1,0 +1,9 @@
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: db-data-snap-1
+  namespace: apps
+spec:
+  volumeSnapshotClassName: iscsi-for-windows-snapclass
+  source:
+    persistentVolumeClaimName: db-data

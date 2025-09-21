@@ -1,0 +1,58 @@
+# --- Docker files ---
+Dockerfile*
+docker-compose*
+.dockerignore
+.docker/
+
+# --- Git files ---
+.git
+.gitignore
+.gitattributes
+.github/
+
+# --- Documentation & Metadata ---
+README.md
+CHANGELOG.md
+SECURITY.md
+LICENSE
+
+# --- DevContainer & Editor Config ---
+.devcontainer/
+.vscode/
+.idea/
+*.code-workspace
+
+# --- Environment & Secrets ---
+.env
+.env.*
+*.local
+*.secret
+
+# --- OS & Editor temp files ---
+.DS_Store
+*.swp
+*.swo
+*.swn
+*.tmp
+*.bak
+
+# --- Log files ---
+*.log
+
+# --- Go build/test artifacts ---
+*.exe
+*.test
+*.out
+*.a
+coverage.*
+*.coverprofile
+*.prof
+
+# --- Build Output & Binaries ---
+/bin
+/build
+/dist
+cache
+vendor/
+.next/
+node_modules/

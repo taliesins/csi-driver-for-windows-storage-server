@@ -21,7 +21,7 @@ if [[ "$#" -gt 0 ]]; then
   ver="$1"
 fi
 
-repo="https://raw.githubusercontent.com/kubernetes-csi/csi-driver-iscsi/$ver/deploy"
+repo="https://raw.githubusercontent.com/taliesins/csi-driver-iscsi-for-windows/$ver/deploy"
 if [[ "$#" -gt 1 ]]; then
   if [[ "$2" == *"local"* ]]; then
     echo "use local deploy"
@@ -33,7 +33,7 @@ if [ $ver != "master" ]; then
   repo="$repo/$ver"
 fi
 
-echo "Installing iscsi.csi.k8s.io CSI driver, version: $ver ..."
-kubectl apply -f $repo/csi-iscsi-driverinfo.yaml
-kubectl apply -f $repo/csi-iscsi-node.yaml
-echo 'iscsi.csi.k8s.io CSI driver installed successfully.'
+echo "Installing iscsi.csi.windows.microsoft.com CSI driver, version: $ver ..."
+kubectl apply -f $repo/csi-iscsi-for-windows-driverinfo.yaml
+kubectl apply -f $repo/csi-iscsi-for-windows-node.yaml
+echo 'iscsi.csi.windows.microsoft.com CSI driver installed successfully.'

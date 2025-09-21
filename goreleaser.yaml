@@ -1,0 +1,127 @@
+# .goreleaser.yml
+
+version: 2
+
+# Explicitly sets the project name for use in templates.
+project_name: csi-driver-iscsi-for-windows
+
+# This GLOBAL hook runs ONCE before the build starts.
+before:
+  hooks:
+    # This uses the correct multi-line string format and executes it in a shell.
+    - |
+      sh -c '
+        set -e
+        HELM_VERSION=${HELM_VERSION:-{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}}
+        HELM_MUTABLE_VERSION=${HELM_MUTABLE_VERSION:-{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}}
+        rm -rf ./chart/dist && mkdir -p ./chart/dist
+        helm package ./chart/csi-driver-iscsi-for-windows \
+          --destination ./chart/dist \
+          --version "$HELM_VERSION" \
+          --app-version "$HELM_VERSION"
+        helm package ./chart/csi-driver-iscsi-for-windows \
+          --destination ./chart/dist \
+          --version "$HELM_MUTABLE_VERSION" \
+          --app-version "$HELM_MUTABLE_VERSION"
+      '
+
+# Defines how to build the Go application binaries for multiple platforms.
+builds:
+  - id: csi-driver-iscsi-for-windows
+    binary: csi-driver-iscsi-for-windows
+    main: ./cmd/csi-driver-iscsi-for-windows
+    goos: ["linux"] # ["linux", "darwin", "windows"]
+    goarch: ["amd64", "arm64"]
+    goarm64: ["v8.0"]
+    goamd64: ["v3"]
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+# Creates compressed archives of your binaries and other files.
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+
+# Configures the multi-platform Docker images (only for Linux builds).
+# This 'dockers' block is for the amd64 architecture.
+dockers:
+  - id: dockers_linux_amd64
+    ids:
+      - csi-driver-iscsi-for-windows
+    use: buildx
+    goos: linux
+    goarch: amd64
+    skip_push: true
+    image_templates:
+      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_TAG }}{{ .Env.CONTAINER_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}{{ end }}"
+      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_MUTABLE_TAG }}{{ .Env.CONTAINER_MUTABLE_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}{{ end }}"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--build-arg=ARTIFACT_PATH=csi-driver-iscsi-for-windows"
+
+  # This second 'dockers' block is for the arm64 architecture.
+  - id: dockers_linux_arm64
+    ids:
+      - csi-driver-iscsi-for-windows
+    use: buildx
+    goos: linux
+    goarch: arm64
+    skip_push: true
+    image_templates:
+      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_TAG }}{{ .Env.CONTAINER_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}{{ end }}"
+      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_MUTABLE_TAG }}{{ .Env.CONTAINER_MUTABLE_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}{{ end }}"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--build-arg=ARTIFACT_PATH=csi-driver-iscsi-for-windows"
+
+# Scans the Docker images with Trivy before publishing.
+docker_signs:
+  - cmd: trivy
+    args: ["image", "--exit-code", "1", "--severity", "CRITICAL,HIGH", "${artifact}"]
+    artifacts: all
+
+# Generates a checksum file for all artifacts.
+checksum:
+  name_template: "checksums.txt"
+
+# Defines the naming for pre-release/snapshot builds.
+snapshot:
+  name_template: "{{ .Commit }}"
+
+# Configures the final GitHub Release.
+release:
+  github:
+    owner: taliesins
+    name: csi-driver-iscsi-for-windows
+  extra_files:
+    - glob: ./chart/dist/*.tgz
+
+# Automatically generates the changelog from git commits.
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs'
+      - '^test'
+      - '^chore'
+  groups:
+    - title: "Features"
+      regexp: '^feat'
+    - title: "Bug Fixes"
+      regexp: '^fix'
+    - title: "Refactoring"
+      regexp: '^refactor'

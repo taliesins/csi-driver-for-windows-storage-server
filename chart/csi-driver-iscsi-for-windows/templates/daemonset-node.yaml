@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "csi-driver-iscsi-for-windows.fullname" . }}-node
+  labels:
+    {{- include "csi-driver-iscsi-for-windows.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "csi-driver-iscsi-for-windows.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "csi-driver-iscsi-for-windows.labels" . | nindent 8 }}
+    spec:
+  serviceAccountName: {{ include "csi-driver-iscsi-for-windows.nodeServiceAccountName" . }}
+      containers:
+        - name: node-driver
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+            - --nodeid=$(KUBE_NODE_NAME)
+          env:
+            - name: CSI_ENDPOINT
+              value: "unix:///csi/csi.sock"
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi-driver-iscsi-for-windows
+            type: DirectoryOrCreate

@@ -33,12 +33,6 @@ func NewDefaultIdentityServer(d *driver) *IdentityServer {
 	}
 }
 
-func NewControllerServer(d *driver) *ControllerServer {
-	return &ControllerServer{
-		Driver: d,
-	}
-}
-
 func NewControllerServiceCapability(cap csi.ControllerServiceCapability_RPC_Type) *csi.ControllerServiceCapability {
 	return &csi.ControllerServiceCapability{
 		Type: &csi.ControllerServiceCapability_Rpc{

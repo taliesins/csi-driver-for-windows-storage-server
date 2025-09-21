@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "csi-driver-iscsi-for-windows.fullname" . }}-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "csi-driver-iscsi-for-windows.fullname" . }}-node
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "csi-driver-iscsi-for-windows.nodeServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

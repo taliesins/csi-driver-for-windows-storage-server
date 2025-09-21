@@ -6,13 +6,13 @@
 
 ```console
 $ mkdir -p $GOPATH/src/sigs.k8s.io/
-$ git clone https://github.com/kubernetes-csi/csi-driver-iscsi $GOPATH/src/github.com/kubernetes-csi/csi-driver-iscsi
+$ git clone https://github.com/taliesins/csi-driver-iscsi-for-windows $GOPATH/src/github.com/taliesins/csi-driver-iscsi-for-windows
 ```
 
 - Build CSI driver
 
 ```console
-$ cd $GOPATH/src/github.com/kubernetes-csi/csi-driver-iscsi
+$ cd $GOPATH/src/github.com/taliesins/csi-driver-iscsi-for-windows
 $ make
 ```
 
@@ -31,7 +31,7 @@ $ make build
 #### Start CSI driver locally
 
 ```console
-$ cd $GOPATH/src/github.com/kubernetes-csi/csi-driver-iscsi
+$ cd $GOPATH/src/github.com/taliesins/csi-driver-iscsi-for-windows
 $ ./_output/iscsiplugin --endpoint tcp://127.0.0.1:10000 --nodeid CSINode -v=5 &
 ```
 
@@ -39,7 +39,7 @@ $ ./_output/iscsiplugin --endpoint tcp://127.0.0.1:10000 --nodeid CSINode -v=5 &
 
 ```console
 $ csc identity plugin-info --endpoint "$endpoint"
-"iscsi.csi.k8s.io"    "v2.0.0"
+"iscsi.csi.windows.microsoft.com"    "v2.0.0"
 ```
 
 - Publish an iscsi volume

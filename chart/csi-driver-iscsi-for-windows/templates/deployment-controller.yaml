@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "csi-driver-iscsi-for-windows.fullname" . }}-controller
+  labels:
+    {{- include "csi-driver-iscsi-for-windows.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "csi-driver-iscsi-for-windows.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "csi-driver-iscsi-for-windows.labels" . | nindent 8 }}
+    spec:
+  serviceAccountName: {{ include "csi-driver-iscsi-for-windows.controllerServiceAccountName" . }}
+      containers:
+        - name: controller-driver
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+          env:
+            - name: CSI_ENDPOINT
+              value: "unix:///csi/csi.sock"
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi-driver-iscsi-for-windows
+            type: DirectoryOrCreate

@@ -1,0 +1,29 @@
+Thank you for installing the csi-driver-iscsi-for-windows Helm chart!
+
+Your CSI driver has been deployed with:
+- Controller Deployment (cluster-wide volume operations)
+- Node DaemonSet (runs on every node for attach/mount)
+
+Key resources created:
+- ServiceAccounts: separate for controller and node
+- ClusterRoles and ClusterRoleBindings for least-privilege RBAC
+
+To verify the deployment:
+
+1. Check controller pod status:
+  kubectl get pods -l app.kubernetes.io/component=controller -n {{ .Release.Namespace }}
+
+2. Check node pods (should be one per node):
+  kubectl get pods -l app.kubernetes.io/component=node -n {{ .Release.Namespace }}
+
+3. Check RBAC and ServiceAccounts:
+  kubectl get serviceaccounts,clusterroles,clusterrolebindings -n {{ .Release.Namespace }} | grep iscsi
+
+4. To see logs for troubleshooting:
+  kubectl logs -l app.kubernetes.io/component=controller -n {{ .Release.Namespace }}
+  kubectl logs -l app.kubernetes.io/component=node -n {{ .Release.Namespace }}
+
+To use the driver, create a StorageClass referencing this CSI driver and then create PVCs as needed. See the examples/ directory for sample manifests.
+
+For more information, see the project documentation or run:
+  helm status {{ .Release.Name }} -n {{ .Release.Namespace }}

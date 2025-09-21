@@ -1,0 +1,38 @@
+name: mcp-server
+
+services:
+  devcontainer:
+    build:
+      context: ..
+      dockerfile: ./.devcontainer/Dockerfile
+      args:
+        BASE_IMAGE: mcr.microsoft.com/devcontainers/go:1-1.24-bookworm
+    env_file: ./.env.devcontainer
+    volumes:
+      - ..:/workspace/:cached
+      - go-mod-cache:/go/pkg/mod           # Module cache (persistent)
+      - go-build-cache:/home/vscode/.cache/go-build
+      - root-go-build-cache:/root/.cache/go-build
+      - vscode-server-data:/home/node/.vscode-server
+      - vscode-server-insiders-data:/home/node/.vscode-server-insiders
+      - history-data:/home/node/history
+      - root-vscode-server-data:/root/.vscode-server
+      - root-vscode-server-insiders-data:/root/.vscode-server-insiders
+      - root-history-data:/root/history
+    networks:
+      - internal_network
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
+  root-go-build-cache:
+  vscode-server-data:
+  vscode-server-insiders-data:
+  history-data:
+  root-vscode-server-data:
+  root-vscode-server-insiders-data:
+  root-history-data:
+
+networks:
+  internal_network:
+    driver: bridge
