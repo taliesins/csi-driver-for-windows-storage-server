@@ -30,7 +30,10 @@
             ],
             // Suppress the dev container notification
             "settings": {
-                "dev.containers.showWelcomeNotification": false
+                "dev.containers.showWelcomeNotification": false,
+                "dev.containers.copyGitConfig": false,
+                "dev.containers.copyGitConfigLocation": "none",
+                "dev.containers.copyLocale": false
             }
         }
     },

@@ -1,7 +1,7 @@
 
 # Project Makefile for csi-driver-iscsi-for-windows
 
-APP_NAME ?= csi-driver-iscsi-for-windows
+APP_NAME ?= iscsiplugin
 REGISTRY ?= test
 IMAGE_NAME ?= $(APP_NAME)
 IMAGE_TAG ?= latest

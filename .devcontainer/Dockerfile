@@ -119,7 +119,24 @@ RUN curl -sSL https://github.com/goreleaser/goreleaser/releases/download/${GOREL
 ARG CONTAINER_USER=vscode
 ARG CONTAINER_GROUP=vscode
 USER root
-RUN mkdir -p /home/${CONTAINER_USER}/.aws /home/${CONTAINER_USER}/.azure /home/${CONTAINER_USER}/.kube /home/${CONTAINER_USER}/.packer.d /home/${CONTAINER_USER}/.terraform.d /home/${CONTAINER_USER}/.ssh /workspace/node_modules /workspace/.next /workspace/cache \
+# When sharing files between devcontainers we need to have the same guid between them. The default GID is 1000 for vscode.
+RUN set -eux; \
+    # Ensure group exists for the GID
+    if ! getent group "${CONTAINER_GROUP}" >/dev/null; then \
+    groupadd --gid "${CONTAINER_GROUP}" shared-group; \
+    fi; \
+    # Resolve group name from GID
+    GROUP_NAME="$(getent group "${CONTAINER_GROUP}" | cut -d: -f1)"; \
+    # Only add user to group if not already a member
+    if ! id -nG "${CONTAINER_USER}" | grep -qw "${GROUP_NAME}"; then \
+    usermod -aG "${GROUP_NAME}" "${CONTAINER_USER}"; \
+    fi
+    
+RUN groupadd -g 1001 docker \
+    && usermod -aG docker root \
+    && usermod -aG docker ${CONTAINER_USER}
+
+RUN mkdir -p /home/${CONTAINER_USER}/.kube /home/${CONTAINER_USER}/.ssh /workspace \
     && chown -R ${CONTAINER_USER}:${CONTAINER_GROUP} /home/${CONTAINER_USER} /workspace \
     && SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/home/${CONTAINER_USER}/.bash_history" \
     && echo "$SNIPPET" >> "/home/${CONTAINER_USER}/.bashrc" \
