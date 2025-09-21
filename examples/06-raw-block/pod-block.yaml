@@ -9,7 +9,7 @@ spec:
   containers:
     - name: app
       image: ubuntu:24.04
-      command: ["bash","-lc","sleep infinity"]
+      command: ["bash", "-lc", "sleep infinity"]
       volumeDevices:
         - name: wal
           devicePath: /dev/walraw

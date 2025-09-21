@@ -29,11 +29,11 @@ if [[ "$#" -gt 1 ]]; then
   fi
 fi
 
-if [ $ver != "master" ]; then
+if [ "$ver" != "master" ]; then
   repo="$repo/$ver"
 fi
 
 echo "Uninstalling iscsi.csi.windows.microsoft.com CSI driver, version: $ver ..."
-kubectl delete -f $repo/csi-iscsi-for-windows-driverinfo.yaml
-kubectl delete -f $repo/csi-iscsi-for-windows-node.yaml
+kubectl delete -f "$repo/csi-iscsi-for-windows-driverinfo.yaml"
+kubectl delete -f "$repo/csi-iscsi-for-windows-node.yaml"
 echo 'iscsi.csi.windows.microsoft.com CSI driver uninstalled successfully.'

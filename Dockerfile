@@ -14,10 +14,9 @@
 
 FROM registry.k8s.io/build-image/debian-base:bookworm-v1.0.5
 
-RUN apt update && apt upgrade -y && apt-mark unhold libcap2
-RUN clean-install util-linux e2fsprogs mount ca-certificates udev xfsprogs btrfs-progs open-iscsi
+RUN apt-get update && apt-get upgrade -y && apt-mark unhold libcap2 && clean-install util-linux e2fsprogs mount ca-certificates udev xfsprogs btrfs-progs open-iscsi && rm -rf /var/lib/apt/lists/*
 
-CMD service iscsid start
+CMD ["service", "iscsid", "start"]
 COPY ./bin/iscsiplugin /iscsiplugin
 
 ENTRYPOINT ["/iscsiplugin"]

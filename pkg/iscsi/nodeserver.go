@@ -73,11 +73,6 @@ func ensureFile(target string) error {
 	return err
 }
 
-func (ns *nodeServer) deviceFromMount(mountPoint string) (string, error) {
-	dev, _, err := mount.GetDeviceNameFromMount(ns.mounter, mountPoint)
-	return dev, err
-}
-
 func (ns *nodeServer) waitForPath(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -269,9 +264,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	}
 
 	// Persist the connector (used by publish/unpublish/unstage)
-	if err := conn.Persist(stageConnectorFile(req.GetStagingTargetPath())); err != nil {
-		// non-fatal; proceed
-	}
+	_ = conn.Persist(stageConnectorFile(req.GetStagingTargetPath()))
 
 	// Block: staging path just needs to exist
 	if req.GetVolumeCapability().GetBlock() != nil {
@@ -359,7 +352,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			if ro {
 				opts = append(opts, "ro")
 			}
-			if err := ns.mounter.Interface.Mount(device, req.GetTargetPath(), "", opts); err != nil {
+			if err := ns.mounter.Mount(device, req.GetTargetPath(), "", opts); err != nil {
 				return nil, status.Errorf(codes.Internal, "bind-mount block device: %v", err)
 			}
 			return &csi.NodePublishVolumeResponse{}, nil
@@ -373,7 +366,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if ro {
 			opts = append(opts, "ro")
 		}
-		if err := ns.mounter.Interface.Mount(device, req.GetTargetPath(), "", opts); err != nil {
+		if err := ns.mounter.Mount(device, req.GetTargetPath(), "", opts); err != nil {
 			return nil, status.Errorf(codes.Internal, "bind-mount block device: %v", err)
 		}
 		return &csi.NodePublishVolumeResponse{}, nil
@@ -407,7 +400,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if ro {
 		opts = append(opts, "ro")
 	}
-	if err := ns.mounter.Interface.Mount(staging, req.GetTargetPath(), "", opts); err != nil {
+	if err := ns.mounter.Mount(staging, req.GetTargetPath(), "", opts); err != nil {
 		return nil, status.Errorf(codes.Internal, "bind-mount publish failed: %v", err)
 	}
 	return &csi.NodePublishVolumeResponse{}, nil

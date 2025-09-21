@@ -66,7 +66,7 @@ func (b *WinRMBackend) runPS(ctx context.Context, script string, out any) error 
 
 	go func() {
 		defer close(done)
-		_, runErr = client.Run(ps, &stringWriter{&stdout}, &stringWriter{&stderr})
+		_, runErr = client.RunWithContext(ctx, ps, &stringWriter{&stdout}, &stringWriter{&stderr})
 	}()
 
 	select {
