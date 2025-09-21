@@ -38,6 +38,89 @@ Get-WindowsFeature FS-FileServer,Storage-Services,FS-iSCSITarget-Server,MSiSCSI,
 |----------------|-----------------------|--------|
 |master branch   | 1.19+                 | alpha   |
 
+
+
+
+### Development Environment
+
+This repository includes a devcontainer with all required tools (Go, Docker, Make, pre-commit, etc.) pre-installed. If you open this project in GitHub Codespaces or a compatible devcontainer environment, you do not need to install any prerequisites manually.
+
+If you are not using the devcontainer, ensure you have Go, Docker, and Make installed.
+
+### Makefile Commands
+
+The project provides a Makefile for common developer tasks.
+
+| Command            | Description                                 |
+|--------------------|---------------------------------------------|
+| make build         | Build the driver binary                     |
+| make test          | Run all Go tests                            |
+| make lint          | Run pre-commit hooks (lint, format, etc.)   |
+| make pre-commit    | Install pre-commit git hooks                |
+| make image         | Build the Docker image                      |
+| make release       | Run goreleaser to build and release         |
+| make clean         | Clean up build artifacts                    |
+
+#### Example: Build the driver
+```sh
+make build
+```
+
+#### Example: Run tests
+```sh
+make test
+```
+
+#### Example: Lint and format
+```sh
+make lint
+```
+
+#### Example: Build Docker image
+```sh
+make image
+```
+
+#### Example: Release with goreleaser
+```sh
+make release
+```
+
+### Install in a Local Kubernetes Cluster
+
+You can install the driver in your local Kubernetes cluster (e.g., kind, minikube) using the provided scripts:
+
+#### 1. Clone the repository (if not already done):
+```sh
+git clone https://github.com/taliesins/csi-driver-iscsi-for-windows.git
+cd csi-driver-iscsi-for-windows
+```
+
+
+#### 2. (Optional) Build the driver image for local changes:
+```sh
+make image
+# or to build and load into kind:
+# kind load docker-image <your-image-name>
+```
+
+#### 3. Install the driver manifests:
+```sh
+./deploy/install-driver.sh master local
+```
+
+#### 4. Check the driver pods:
+```sh
+kubectl -n kube-system get pod -o wide -l app=csi-iscsi-for-windows-node
+```
+
+#### 5. Uninstall the driver:
+```sh
+./deploy/uninstall-driver.sh master local
+```
+
+---
+
 ### Install driver on a Kubernetes cluster
 
 - install by [kubectl](./docs/install-iscsi-csi-driver.md)

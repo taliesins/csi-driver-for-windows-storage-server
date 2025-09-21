@@ -1,48 +1,34 @@
-# Copyright 2017 The Kubernetes Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-CMDS=iscsiplugin
+# Project Makefile for csi-driver-iscsi-for-windows
+
+APP_NAME ?= csi-driver-iscsi-for-windows
+REGISTRY ?= test
+IMAGE_NAME ?= $(APP_NAME)
+IMAGE_TAG ?= latest
+PLATFORM ?= linux/amd64
+
+.PHONY: all build test image release lint pre-commit clean
+
 all: build
 
-include release-tools/build.make
+build:
+	go build -o bin/$(APP_NAME) ./cmd/iscsiplugin
 
-GOPATH ?= $(shell go env GOPATH)
-GOBIN ?= $(GOPATH)/bin
-export GOPATH GOBIN
+test:
+	go test ./...
 
-REGISTRY ?= test
-IMAGENAME ?= iscsi-csi
-# Output type of docker buildx build
-OUTPUT_TYPE ?= docker
-ARCH ?= amd64
-IMAGE_TAG = $(REGISTRY)/$(IMAGENAME):$(IMAGE_VERSION)
+image:
+	docker buildx build --platform=$(PLATFORM) -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) .
 
-.PHONY: test-container
-test-container:
-	make
-	docker buildx build --pull --output=type=$(OUTPUT_TYPE) --platform="linux/$(ARCH)" \
-		-t $(IMAGE_TAG) --build-arg ARCH=$(ARCH) .
+release:
+	goreleaser release --clean
 
-.PHONY: sanity-test
-sanity-test:
-	make
-	./test/sanity/run-test.sh
-.PHONY: mod-check
-mod-check:
-	go mod verify && [ "$(shell sha512sum go.mod)" = "`sha512sum go.mod`" ] || ( echo "ERROR: go.mod was modified by 'go mod verify'" && false )
+lint:
+	pre-commit run --all-files
 
-.PHONY: clean
+pre-commit:
+	pre-commit install
+
 clean:
+	rm -rf bin/
 	go clean -mod=vendor -r -x
-	rm -f bin/iscsiplugin
