@@ -8,7 +8,7 @@ jobs:
   reviewgpt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run ReviewGPT
         uses: ReviewGPT/ReviewGPT@v0.2.0
         with:
