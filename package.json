@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "oh-my-openagent": "^3.17.5",
+    "oh-my-opencode": "^3.17.5"
+  },
+  "trustedDependencies": [
+    "oh-my-openagent"
+  ]
+}

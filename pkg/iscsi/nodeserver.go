@@ -17,6 +17,16 @@ import (
 	utilexec "k8s.io/utils/exec"
 )
 
+// Mockable function references for testing
+var (
+	iscsilibConnect      = func(c iscsilib.Connector) (string, error) { return iscsilib.Connect(c) }
+	iscsilibExpandVolume = func(m mount.Interface, resizer iscsilib.Resizer, volumePath string) error {
+		return iscsilib.ExpandVolume(m, resizer, volumePath)
+	}
+	fsUsageFunc           = fsUsage
+	nodePublishDeviceWait = 60 * time.Second
+)
+
 type nodeServer struct {
 	Driver  *driver
 	mounter *mount.SafeFormatAndMount
@@ -52,6 +62,9 @@ func getStr(m map[string]string, k string) (string, bool) {
 func isBlockDevice(p string) (bool, error) {
 	st, err := os.Stat(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
 		return false, err
 	}
 	return (st.Mode() & os.ModeDevice) != 0, nil
@@ -225,6 +238,136 @@ func (ns *nodeServer) parsePublish(req *csi.NodePublishVolumeRequest) (portal, i
 	return
 }
 
+func publishProtocol(req interface {
+	GetPublishContext() map[string]string
+}) Protocol {
+	pc := req.GetPublishContext()
+	proto := strings.ToLower(strings.TrimSpace(pc["protocol"]))
+	switch Protocol(proto) {
+	case ProtocolNFS:
+		return ProtocolNFS
+	case ProtocolSMB:
+		return ProtocolSMB
+	default:
+		return ProtocolISCSI
+	}
+}
+
+func mountOptionsFromContext(vc map[string]string) []string {
+	var opts []string
+	if v, ok := getStr(vc, "mountOptions"); ok {
+		for _, mo := range strings.Split(v, ",") {
+			mo = strings.TrimSpace(mo)
+			if mo != "" {
+				opts = append(opts, mo)
+			}
+		}
+	}
+	return opts
+}
+
+func firstSecretValue(secrets map[string]string, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := getStr(secrets, key); ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func appendOptionIfMissing(opts []string, prefix, value string) []string {
+	if value == "" {
+		return opts
+	}
+	if prefix != "" {
+		for _, opt := range opts {
+			if strings.HasPrefix(strings.ToLower(opt), strings.ToLower(prefix)) {
+				return opts
+			}
+		}
+	}
+	return append(opts, value)
+}
+
+func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, proto Protocol) (*csi.NodeStageVolumeResponse, error) {
+	if err := ns.init(); err != nil {
+		return nil, err
+	}
+	if req.GetVolumeCapability().GetBlock() != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s volumes do not support block mode", proto)
+	}
+	pc := req.GetPublishContext()
+	var source, fsType string
+	switch proto {
+	case ProtocolNFS:
+		server, ok := getStr(pc, "nfsServer")
+		if !ok {
+			server, ok = getStr(pc, "server")
+		}
+		exportPath, ok2 := getStr(pc, "nfsExportPath")
+		if !ok2 {
+			exportPath, ok2 = getStr(pc, "exportPath")
+		}
+		if !ok || !ok2 {
+			return nil, status.Error(codes.InvalidArgument, "publishContext nfsServer/server and nfsExportPath/exportPath are required")
+		}
+		source = server + ":" + exportPath
+		fsType = "nfs"
+	case ProtocolSMB:
+		server, ok := getStr(pc, "smbServer")
+		if !ok {
+			server, ok = getStr(pc, "server")
+		}
+		share, ok2 := getStr(pc, "smbShareName")
+		if !ok2 {
+			share, ok2 = getStr(pc, "share")
+		}
+		if !ok || !ok2 {
+			return nil, status.Error(codes.InvalidArgument, "publishContext smbServer/server and smbShareName/share are required")
+		}
+		source = fmt.Sprintf("//%s/%s", server, share)
+		fsType = "cifs"
+	}
+	opts := mountOptionsFromContext(req.GetVolumeContext())
+	switch proto {
+	case ProtocolNFS:
+		if version, ok := getStr(req.GetVolumeContext(), "nfsVersion"); ok {
+			opts = appendOptionIfMissing(opts, "vers=", "vers="+version)
+		}
+	case ProtocolSMB:
+		if version, ok := getStr(req.GetVolumeContext(), "smbVersion"); ok {
+			opts = appendOptionIfMissing(opts, "vers=", "vers="+version)
+		}
+		if username, ok := firstSecretValue(req.GetSecrets(), "smbUsername", "username"); ok {
+			opts = appendOptionIfMissing(opts, "username=", "username="+username)
+		}
+		if password, ok := firstSecretValue(req.GetSecrets(), "smbPassword", "password"); ok {
+			opts = appendOptionIfMissing(opts, "password=", "password="+password)
+		}
+		if domain, ok := firstSecretValue(req.GetSecrets(), "smbDomain", "domain"); ok {
+			opts = appendOptionIfMissing(opts, "domain=", "domain="+domain)
+		}
+		if seal, ok := getStr(req.GetVolumeContext(), "smbSeal"); ok {
+			if enabled, err := strconv.ParseBool(seal); err == nil && enabled {
+				opts = appendOptionIfMissing(opts, "seal", "seal")
+			}
+		}
+	}
+	if err := os.MkdirAll(req.GetStagingTargetPath(), 0o755); err != nil {
+		return nil, status.Errorf(codes.Internal, "mkdir staging: %v", err)
+	}
+	notMnt, merr := ns.mounter.IsLikelyNotMountPoint(req.GetStagingTargetPath())
+	if merr != nil && !os.IsNotExist(merr) {
+		return nil, status.Errorf(codes.Internal, "check staging mount: %v", merr)
+	}
+	if notMnt {
+		if err := ns.mounter.Mount(source, req.GetStagingTargetPath(), fsType, opts); err != nil {
+			return nil, status.Errorf(codes.Internal, "mount %s volume: %v", proto, err)
+		}
+	}
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+
 // ---------- NodeStage / NodeUnstage ----------
 
 func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
@@ -236,6 +379,9 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	}
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volumeCapability missing")
+	}
+	if proto := publishProtocol(req); proto == ProtocolNFS || proto == ProtocolSMB {
+		return ns.stageFileShareVolume(req, proto)
 	}
 
 	portal, iqn, lun, fsType, mountOpts, iface, chapDisc, discSec, sessSec, authType, err := ns.parseStage(req)
@@ -258,7 +404,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		RetryCount:       60,
 		CheckInterval:    2,
 	}
-	device, err := conn.Connect()
+	device, err := iscsilibConnect(*conn)
 	if err != nil || device == "" {
 		return nil, status.Errorf(codes.Internal, "iSCSI connect failed: %v", err)
 	}
@@ -324,6 +470,26 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volumeCapability missing")
 	}
+	if proto := publishProtocol(req); proto == ProtocolNFS || proto == ProtocolSMB {
+		if req.GetVolumeCapability().GetBlock() != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "%s volumes do not support block mode", proto)
+		}
+		staging := req.GetStagingTargetPath()
+		if staging == "" {
+			return nil, status.Error(codes.InvalidArgument, "stagingTargetPath required for mount volumes")
+		}
+		if err := os.MkdirAll(req.GetTargetPath(), 0o755); err != nil {
+			return nil, status.Errorf(codes.Internal, "mkdir target: %v", err)
+		}
+		opts := []string{"bind"}
+		if req.GetReadonly() {
+			opts = append(opts, "ro")
+		}
+		if err := ns.mounter.Mount(staging, req.GetTargetPath(), "", opts); err != nil {
+			return nil, status.Errorf(codes.Internal, "bind-mount publish failed: %v", err)
+		}
+		return &csi.NodePublishVolumeResponse{}, nil
+	}
 
 	portal, iqn, lun, fsType, mountOpts, ro, err := ns.parsePublish(req)
 	if err != nil {
@@ -342,7 +508,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			// Fallback: compute the by-path and bind mount
 			device := filepath.Join("/dev/disk/by-path",
 				fmt.Sprintf("ip-%s-iscsi-%s-lun-%d", portal, iqn, lun))
-			if err := ns.waitForPath(device, 60*time.Second); err != nil {
+			if err := ns.waitForPath(device, nodePublishDeviceWait); err != nil {
 				return nil, status.Errorf(codes.Internal, "cannot resolve device for block publish: %v", err)
 			}
 			if err := ensureFile(req.GetTargetPath()); err != nil {
@@ -472,8 +638,16 @@ func (ns *nodeServer) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVo
 		}, nil
 	}
 
-	available, capacity, used, inodes, inodesFree, inodesUsed, err := fsUsage(req.GetVolumePath())
+	available, capacity, used, inodes, inodesFree, inodesUsed, err := fsUsageFunc(req.GetVolumePath())
 	if err != nil {
+		if os.IsNotExist(err) {
+			return &csi.NodeGetVolumeStatsResponse{
+				Usage: []*csi.VolumeUsage{
+					{Unit: csi.VolumeUsage_BYTES},
+					{Unit: csi.VolumeUsage_INODES},
+				},
+			}, nil
+		}
 		return nil, status.Errorf(codes.Internal, "statfs failed: %v", err)
 	}
 	return &csi.NodeGetVolumeStatsResponse{
@@ -494,9 +668,12 @@ func (ns *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandV
 	if err := ns.init(); err != nil {
 		return nil, status.Errorf(codes.Internal, "init: %v", err)
 	}
+	if proto, err := ParseProtocolFromVolumeID(req.GetVolumeId()); err == nil && (proto == ProtocolNFS || proto == ProtocolSMB) {
+		return &csi.NodeExpandVolumeResponse{}, nil
+	}
 
 	// Moved into iscsilib: rescan iSCSI + resize multipath (if any) + grow filesystem
-	if err := iscsilib.ExpandVolume(ns.mounter.Interface, ns.resizer, req.GetVolumePath()); err != nil {
+	if err := iscsilibExpandVolume(ns.mounter.Interface, ns.resizer, req.GetVolumePath()); err != nil {
 		return nil, status.Errorf(codes.Internal, "expand failed: %v", err)
 	}
 

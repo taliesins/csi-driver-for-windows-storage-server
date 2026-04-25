@@ -28,6 +28,25 @@ Get-WindowsFeature FS-FileServer,Storage-Services,FS-iSCSITarget-Server,MSiSCSI,
   Format-Table DisplayName, Name, InstallState
 ```
 
+Windows Server bootstrap script:
+
+Run the PowerShell setup script from an elevated PowerShell session on the Windows Server that will host the iSCSI target:
+
+```powershell
+$AllowedClient = "Any"   # Example: "203.0.113.10/32". Use "Any" only in an isolated lab.
+$WinRMUser = "csi-winrm-test"
+$StoragePath = "C:\data\taliesins\csi-driver-iscsi-for-windows2\vhdx"
+$CertDnsName = $env:COMPUTERNAME          # Or the DNS name you will use as WINRM_HOST.
+
+.\deploy\install-windows-machine.ps1 `
+  -AllowedClient $AllowedClient `
+  -WinRMUser $WinRMUser `
+  -StoragePath $StoragePath `
+  -CertDnsName $CertDnsName
+```
+
+Use `-AllowedClient Any` and `-IscsiTargetRemoteAddress Any` only in an isolated lab. The script installs the iSCSI target features, creates the VHDX storage directory, configures a local WinRM admin user, enables WinRM HTTPS with Basic authentication on port `5986`, keeps unencrypted WinRM disabled, and opens iSCSI target port `3260`.
+
 
 
 ### Project status: Alpha
@@ -46,6 +65,37 @@ Get-WindowsFeature FS-FileServer,Storage-Services,FS-iSCSITarget-Server,MSiSCSI,
 This repository includes a devcontainer with all required tools (Go, Docker, Make, pre-commit, etc.) pre-installed. If you open this project in GitHub Codespaces or a compatible devcontainer environment, you do not need to install any prerequisites manually.
 
 If you are not using the devcontainer, ensure you have Go, Docker, and Make installed.
+
+### Running Unit Tests
+
+The default unit test suite is designed to run on Linux, Windows, macOS, CI runners, and the devcontainer. It does not require a Windows Server, WinRM credentials, an iSCSI target, Docker, or a Kubernetes cluster.
+
+Prerequisites for a local machine:
+
+- Go with toolchain auto-download enabled, or Go `1.26.2` installed directly
+- Make, if you want to use the Makefile shortcut
+
+Run the unit tests:
+
+```sh
+go test ./...
+# or
+make test
+```
+
+If your local Go command is older than the version in `go.mod`, enable toolchain auto-download or run with an explicit toolchain:
+
+```sh
+go env -w GOTOOLCHAIN=auto
+# or for one command
+GOTOOLCHAIN=go1.26.2 go test ./...
+```
+
+WinRM tests that need a real Windows Server are integration tests and are not required for the default unit test suite. To run them, configure a Windows host and use the `integration` build tag. Set `WINRM_TEST_PARENT_DIR` to a scratch directory where the tests can create and delete temporary iSCSI virtual disks. The virtual disk and snapshot lifecycle tests require administrator access to the Windows iSCSI Target service:
+
+```sh
+go test -tags=integration ./pkg/iscsi -run TestWinRMBackendIntegration -v
+```
 
 ### Makefile Commands
 

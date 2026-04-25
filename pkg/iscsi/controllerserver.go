@@ -74,15 +74,27 @@ type snapID struct {
 type SnapshotInfo struct {
 	SnapshotID   string
 	OriginalPath string
+	SourceVolume string
 	Description  string
 	CreatedAt    time.Time
 	SizeBytes    int64
+	ReadyToUse   bool
 }
 type VolumeInfo struct {
-	VHDXPath  string
-	SizeBytes int64
-	Targets   []string
-	LUN       *int32
+	VolumeName    string
+	Protocol      Protocol
+	TargetPortal  string
+	TargetIQN     string
+	LUN           any
+	VHDXPath      string
+	NfsServer     string
+	NfsExportPath string
+	SmbServer     string
+	SmbShareName  string
+	CapacityBytes int64
+	CreatedAt     time.Time
+	SizeBytes     int64
+	Targets       []string
 }
 
 func encodeVolID(v volID) string {
@@ -146,6 +158,212 @@ func requiredBytesFromRange(cr *csi.CapacityRange, minGiB int64) (int64, error) 
 	}
 }
 
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func parseBoolParam(params map[string]string, key string) (*bool, error) {
+	raw, ok := getStringParam(params, key)
+	if !ok {
+		return nil, nil
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "y", "on":
+		return boolPtr(true), nil
+	case "0", "false", "no", "n", "off":
+		return boolPtr(false), nil
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "parameter %s must be a boolean", key)
+	}
+}
+
+func parseIntParam(params map[string]string, key string) (*int, error) {
+	raw, ok := getStringParam(params, key)
+	if !ok {
+		return nil, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "parameter %s must be an integer", key)
+	}
+	return &v, nil
+}
+
+func parseUint32Param(params map[string]string, key string) (uint32, error) {
+	raw, ok := getStringParam(params, key)
+	if !ok {
+		return 0, nil
+	}
+	v, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, status.Errorf(codes.InvalidArgument, "parameter %s must be a non-negative integer", key)
+	}
+	return uint32(v), nil
+}
+
+func normalizeNfsPermission(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "rw", "readwrite", "read-write":
+		return "readwrite", nil
+	case "ro", "readonly", "read-only":
+		return "readonly", nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "parameter nfsPermission must be readonly/ro or readwrite/rw")
+	}
+}
+
+func nfsOptionsFromParams(params map[string]string) (NfsShareOptions, error) {
+	allowRootAccess, err := parseBoolParam(params, "nfsAllowRootAccess")
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	enableAnonymousAccess, err := parseBoolParam(params, "nfsEnableAnonymousAccess")
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	enableUnmappedAccess, err := parseBoolParam(params, "nfsEnableUnmappedAccess")
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	anonymousUID, err := parseIntParam(params, "nfsAnonymousUid")
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	anonymousGID, err := parseIntParam(params, "nfsAnonymousGid")
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	permission, err := normalizeNfsPermission(params["nfsPermission"])
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	clientType := strings.TrimSpace(params["nfsClientType"])
+	if clientType == "" {
+		clientType = "host"
+	}
+	return NfsShareOptions{
+		ClientType:            clientType,
+		Permission:            permission,
+		AllowRootAccess:       allowRootAccess,
+		Authentication:        splitCSVParam(params["nfsAuthentication"]),
+		AnonymousUID:          anonymousUID,
+		AnonymousGID:          anonymousGID,
+		LanguageEncoding:      strings.TrimSpace(params["nfsLanguageEncoding"]),
+		EnableAnonymousAccess: enableAnonymousAccess,
+		EnableUnmappedAccess:  enableUnmappedAccess,
+	}, nil
+}
+
+func smbOptionsFromParams(params map[string]string) (SmbShareOptions, error) {
+	encryptData, err := parseBoolParam(params, "smbEncryptData")
+	if err != nil {
+		return SmbShareOptions{}, err
+	}
+	compressData, err := parseBoolParam(params, "smbCompressData")
+	if err != nil {
+		return SmbShareOptions{}, err
+	}
+	continuouslyAvailable, err := parseBoolParam(params, "smbContinuouslyAvailable")
+	if err != nil {
+		return SmbShareOptions{}, err
+	}
+	concurrentUserLimit, err := parseUint32Param(params, "smbConcurrentUserLimit")
+	if err != nil {
+		return SmbShareOptions{}, err
+	}
+	return SmbShareOptions{
+		NoAccess:              splitCSVParam(params["smbNoAccess"]),
+		Description:           strings.TrimSpace(params["smbDescription"]),
+		EncryptData:           encryptData,
+		CompressData:          compressData,
+		ContinuouslyAvailable: continuouslyAvailable,
+		CachingMode:           strings.TrimSpace(params["smbCachingMode"]),
+		FolderEnumerationMode: strings.TrimSpace(params["smbFolderEnumerationMode"]),
+		ConcurrentUserLimit:   concurrentUserLimit,
+	}, nil
+}
+
+func (cs *ControllerServer) protocolFromParams(params map[string]string) (Protocol, error) {
+	raw := strings.ToLower(strings.TrimSpace(params["protocol"]))
+	if raw == "" {
+		if cs.Driver != nil && cs.Driver.protocol != "" {
+			return cs.Driver.protocol, nil
+		}
+		return ProtocolISCSI, nil
+	}
+	switch Protocol(raw) {
+	case ProtocolISCSI, ProtocolNFS, ProtocolSMB:
+		protocol := Protocol(raw)
+		if cs.Driver != nil && cs.Driver.protocol != "" && protocol != cs.Driver.protocol {
+			return "", status.Errorf(codes.InvalidArgument, "protocol %s does not match CSI driver %s", protocol, cs.Driver.name)
+		}
+		return protocol, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "unsupported protocol: %s", raw)
+	}
+}
+
+func decodeAnyVolumeID(id string) (*VolumeID, volID, error) {
+	if v, err := DecodeVolumeID(id); err == nil {
+		return v, volID{}, nil
+	}
+	legacy, err := decodeVolID(id)
+	if err != nil {
+		return nil, volID{}, err
+	}
+	return &VolumeID{
+		Name:          legacy.VolumeName,
+		Protocol:      ProtocolISCSI,
+		TargetPortal:  legacy.TargetPortal,
+		TargetIQN:     legacy.TargetIQN,
+		LUN:           int(legacy.LUN),
+		VHDXPath:      legacy.VHDXPath,
+		CapacityBytes: legacy.SizeBytes,
+	}, legacy, nil
+}
+
+func volumeContextForVolumeID(v *VolumeID) map[string]string {
+	switch v.Protocol {
+	case ProtocolNFS:
+		return map[string]string{
+			"protocol":      string(ProtocolNFS),
+			"server":        v.NfsServer,
+			"nfsServer":     v.NfsServer,
+			"exportPath":    v.NfsExportPath,
+			"nfsExportPath": v.NfsExportPath,
+		}
+	case ProtocolSMB:
+		return map[string]string{
+			"protocol":     string(ProtocolSMB),
+			"server":       v.SmbServer,
+			"smbServer":    v.SmbServer,
+			"share":        v.SmbShareName,
+			"smbShareName": v.SmbShareName,
+		}
+	default:
+		return map[string]string{
+			"targetPortal": v.TargetPortal,
+			"iqn":          v.TargetIQN,
+			"lun":          strconv.Itoa(v.LUN),
+		}
+	}
+}
+
+func (cs *ControllerServer) supportsAccessMode(mode csi.VolumeCapability_AccessMode_Mode) bool {
+	switch mode {
+	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
+		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
+		return true
+	case csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
+		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
+		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
+		return cs.Driver != nil && (cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB)
+	default:
+		return false
+	}
+}
+
 // ---------- Controller RPCs ----------
 
 func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -155,19 +373,24 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
 	}
-	// Accept only SINGLE_NODE_* modes
 	for _, vc := range req.GetVolumeCapabilities() {
-		switch vc.GetAccessMode().GetMode() {
-		case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
-			csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
-			// ok
-		default:
-			return nil, status.Error(codes.InvalidArgument, "only SINGLE_NODE_* access modes supported")
+		if !cs.supportsAccessMode(vc.GetAccessMode().GetMode()) {
+			return nil, status.Error(codes.InvalidArgument, "access mode is not supported by this driver")
 		}
 	}
 
 	params := req.GetParameters()
+	protocol, err := cs.protocolFromParams(params)
+	if err != nil {
+		return nil, err
+	}
+	if protocol == ProtocolNFS {
+		return cs.createNfsVolume(ctx, req)
+	}
+	if protocol == ProtocolSMB {
+		return cs.createSmbVolume(ctx, req)
+	}
+
 	targetPortal, ok := getStringParam(params, "targetPortal")
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "parameter targetPortal is required")
@@ -315,14 +538,163 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}, nil
 }
 
+func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+	params := req.GetParameters()
+	parentDir, ok := getStringParam(params, "shareParentPath")
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "parameter shareParentPath is required")
+	}
+	nfsServer, _ := getStringParam(params, "nfsServer")
+	nfsOpts, err := nfsOptionsFromParams(params)
+	if err != nil {
+		return nil, err
+	}
+	size, err := requiredBytesFromRange(req.GetCapacityRange(), 1)
+	if err != nil {
+		return nil, err
+	}
+	name := req.GetName()
+	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, parentDir)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "GetNfsShare: %v", err)
+	}
+	if !exists {
+		info, err = cs.Driver.backend.CreateNfsShare(ctx, name, parentDir, size, splitCSVParam(params["nfsClientName"]), nfsOpts)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "CreateNfsShare: %v", err)
+		}
+		if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
+			sid, err := decodeSnapID(src.GetSnapshot().GetSnapshotId())
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid snapshotId: %v", err)
+			}
+			if info.VHDXPath == "" {
+				return nil, status.Error(codes.Internal, "CreateNfsShare did not return a backing path")
+			}
+			if err := cs.Driver.backend.RestoreSnapshotAsFileShare(ctx, sid.SnapshotID, info.VHDXPath); err != nil {
+				return nil, status.Errorf(codes.Internal, "RestoreSnapshotAsFileShare: %v", err)
+			}
+		}
+	}
+	if nfsServer != "" {
+		info.NfsServer = nfsServer
+	}
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          name,
+		Protocol:      ProtocolNFS,
+		NfsServer:     info.NfsServer,
+		NfsExportPath: info.NfsExportPath,
+		VHDXPath:      info.VHDXPath,
+		CapacityBytes: maxInt64(info.CapacityBytes, size),
+	})
+	return &csi.CreateVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:      vid,
+			CapacityBytes: maxInt64(info.CapacityBytes, size),
+			VolumeContext: volumeContextForVolumeID(&VolumeID{
+				Protocol:      ProtocolNFS,
+				NfsServer:     info.NfsServer,
+				NfsExportPath: info.NfsExportPath,
+			}),
+			ContentSource: req.GetVolumeContentSource(),
+		},
+	}, nil
+}
+
+func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
+	params := req.GetParameters()
+	parentDir, ok := getStringParam(params, "shareParentPath")
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "parameter shareParentPath is required")
+	}
+	smbServer, _ := getStringParam(params, "smbServer")
+	smbOpts, err := smbOptionsFromParams(params)
+	if err != nil {
+		return nil, err
+	}
+	size, err := requiredBytesFromRange(req.GetCapacityRange(), 1)
+	if err != nil {
+		return nil, err
+	}
+	name := req.GetName()
+	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, parentDir)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "GetSmbShare: %v", err)
+	}
+	if !exists {
+		info, err = cs.Driver.backend.CreateSmbShare(ctx, name, parentDir, size,
+			splitCSVParam(params["smbFullAccess"]),
+			splitCSVParam(params["smbChangeAccess"]),
+			splitCSVParam(params["smbReadAccess"]),
+			smbOpts)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "CreateSmbShare: %v", err)
+		}
+		if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
+			sid, err := decodeSnapID(src.GetSnapshot().GetSnapshotId())
+			if err != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid snapshotId: %v", err)
+			}
+			if info.VHDXPath == "" {
+				return nil, status.Error(codes.Internal, "CreateSmbShare did not return a backing path")
+			}
+			if err := cs.Driver.backend.RestoreSnapshotAsFileShare(ctx, sid.SnapshotID, info.VHDXPath); err != nil {
+				return nil, status.Errorf(codes.Internal, "RestoreSnapshotAsFileShare: %v", err)
+			}
+		}
+	}
+	if smbServer != "" {
+		info.SmbServer = smbServer
+	}
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          name,
+		Protocol:      ProtocolSMB,
+		SmbServer:     info.SmbServer,
+		SmbShareName:  info.SmbShareName,
+		VHDXPath:      info.VHDXPath,
+		CapacityBytes: maxInt64(info.CapacityBytes, size),
+	})
+	return &csi.CreateVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:      vid,
+			CapacityBytes: maxInt64(info.CapacityBytes, size),
+			VolumeContext: volumeContextForVolumeID(&VolumeID{
+				Protocol:     ProtocolSMB,
+				SmbServer:    info.SmbServer,
+				SmbShareName: info.SmbShareName,
+			}),
+			ContentSource: req.GetVolumeContentSource(),
+		},
+	}, nil
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
 	}
-	id, err := decodeVolID(req.GetVolumeId())
+	decoded, id, err := decodeAnyVolumeID(req.GetVolumeId())
 	if err != nil {
 		// idempotent delete
 		klog.Warningf("DeleteVolume: decode error: %v", err)
+		return &csi.DeleteVolumeResponse{}, nil
+	}
+	switch decoded.Protocol {
+	case ProtocolNFS:
+		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, decoded.VHDXPath); err != nil {
+			klog.Warningf("DeleteNfsShare: %v", err)
+		}
+		return &csi.DeleteVolumeResponse{}, nil
+	case ProtocolSMB:
+		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, decoded.VHDXPath); err != nil {
+			klog.Warningf("DeleteSmbShare: %v", err)
+		}
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 	// best-effort unmap + delete
@@ -340,20 +712,26 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 }
 
 func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
-	if req.GetVolumeId() == "" || req.GetNodeId() == "" {
+	if req.GetVolumeId() == "" && req.GetNodeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id and node_id are required")
 	}
-	id, err := decodeVolID(req.GetVolumeId())
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume_id are required")
+	}
+	if req.GetNodeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "node_id are required")
+	}
+	decoded, id, err := decodeAnyVolumeID(req.GetVolumeId())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid volume_id: %v", err)
 	}
-	// enforce SINGLE_NODE_* modes
-	switch req.GetVolumeCapability().GetAccessMode().GetMode() {
-	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
-		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
-	default:
-		return nil, status.Error(codes.FailedPrecondition, "only SINGLE_NODE_* access modes supported")
+	if !cs.supportsAccessMode(req.GetVolumeCapability().GetAccessMode().GetMode()) {
+		return nil, status.Error(codes.FailedPrecondition, "access mode is not supported by this driver")
+	}
+	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
+		return &csi.ControllerPublishVolumeResponse{
+			PublishContext: volumeContextForVolumeID(decoded),
+		}, nil
 	}
 	initiatorIQN := req.GetNodeId()
 	if !strings.HasPrefix(initiatorIQN, "iqn.") {
@@ -372,11 +750,20 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 }
 
 func (cs *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
-	if req.GetVolumeId() == "" || req.GetNodeId() == "" {
+	if req.GetVolumeId() == "" && req.GetNodeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id and node_id are required")
 	}
-	id, err := decodeVolID(req.GetVolumeId())
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume_id are required")
+	}
+	if req.GetNodeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "node_id are required")
+	}
+	decoded, id, err := decodeAnyVolumeID(req.GetVolumeId())
 	if err != nil {
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
+	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 	if err := cs.Driver.backend.DenyInitiator(ctx, id.TargetIQN, req.GetNodeId()); err != nil {
@@ -389,18 +776,13 @@ func (cs *ControllerServer) ValidateVolumeCapabilities(ctx context.Context, req 
 	if req.GetVolumeId() == "" || len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "volume_id and volume_capabilities are required")
 	}
-	if _, err := decodeVolID(req.GetVolumeId()); err != nil {
+	if _, _, err := decodeAnyVolumeID(req.GetVolumeId()); err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid volume_id: %v", err)
 	}
 	for _, vc := range req.GetVolumeCapabilities() {
-		switch vc.GetAccessMode().GetMode() {
-		case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-			csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
-			csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
-			// ok
-		default:
+		if !cs.supportsAccessMode(vc.GetAccessMode().GetMode()) {
 			return &csi.ValidateVolumeCapabilitiesResponse{
-				Message: "only SINGLE_NODE_* access modes supported",
+				Message: "access mode is not supported by this driver",
 			}, nil
 		}
 	}
@@ -418,9 +800,13 @@ func (cs *ControllerServer) ListVolumes(ctx context.Context, req *csi.ListVolume
 
 func (cs *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	params := req.GetParameters()
-	parentDir, ok := getStringParam(params, "vhdxParentPath")
+	key := "vhdxParentPath"
+	if cs.Driver != nil && (cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB) {
+		key = "shareParentPath"
+	}
+	parentDir, ok := getStringParam(params, key)
 	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "parameter vhdxParentPath is required")
+		return nil, status.Errorf(codes.InvalidArgument, "parameter %s is required", key)
 	}
 	free, err := cs.Driver.backend.GetDirectoryFreeCapacity(ctx, parentDir)
 	if err != nil {
@@ -442,12 +828,19 @@ func (cs *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	if req.GetSourceVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "source_volume_id required")
 	}
-	vid, err := decodeVolID(req.GetSourceVolumeId())
+	decoded, vid, err := decodeAnyVolumeID(req.GetSourceVolumeId())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid source_volume_id: %v", err)
 	}
+	sourcePath := decoded.VHDXPath
+	if sourcePath == "" {
+		sourcePath = vid.VHDXPath
+	}
+	if sourcePath == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "source volume %q does not include a backend path", req.GetSourceVolumeId())
+	}
 	desc := strings.TrimSpace(req.GetName())
-	snap, err := cs.Driver.backend.CreateSnapshot(ctx, vid.VHDXPath, desc)
+	snap, err := cs.Driver.backend.CreateSnapshot(ctx, sourcePath, desc)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "CreateSnapshot: %v", err)
 	}
@@ -496,12 +889,19 @@ func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 			}
 		}
 	case req.GetSourceVolumeId() != "":
-		vid, err := decodeVolID(req.GetSourceVolumeId())
+		decoded, vid, err := decodeAnyVolumeID(req.GetSourceVolumeId())
 		if err != nil {
 			return nil, status.Errorf(codes.NotFound, "invalid source_volume_id: %v", err)
 		}
+		sourcePath := decoded.VHDXPath
+		if sourcePath == "" {
+			sourcePath = vid.VHDXPath
+		}
+		if sourcePath == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "source volume %q does not include a backend path", req.GetSourceVolumeId())
+		}
 		var e error
-		snaps, e = cs.Driver.backend.ListSnapshots(ctx, vid.VHDXPath)
+		snaps, e = cs.Driver.backend.ListSnapshots(ctx, sourcePath)
 		if e != nil {
 			return nil, status.Errorf(codes.Internal, "ListSnapshots: %v", e)
 		}
@@ -531,13 +931,26 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	if req.GetVolumeId() == "" || req.GetCapacityRange() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volume_id and capacity_range are required")
 	}
-	id, err := decodeVolID(req.GetVolumeId())
+	decoded, id, err := decodeAnyVolumeID(req.GetVolumeId())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid volume_id: %v", err)
 	}
 	want := req.GetCapacityRange().GetRequiredBytes()
 	if want <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "required_bytes must be > 0")
+	}
+	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
+		if decoded.VHDXPath == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "volume %q does not include a backing path", req.GetVolumeId())
+		}
+		actual, err := cs.Driver.backend.ResizeFileShare(ctx, decoded.VHDXPath, want)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "ResizeFileShare: %v", err)
+		}
+		return &csi.ControllerExpandVolumeResponse{
+			CapacityBytes:         actual,
+			NodeExpansionRequired: false,
+		}, nil
 	}
 	actual, err := cs.Driver.backend.ResizeVirtualDisk(ctx, id.VHDXPath, want)
 	if err != nil {
@@ -556,9 +969,21 @@ func (cs *ControllerServer) ControllerGetVolume(ctx context.Context, req *csi.Co
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id required")
 	}
-	id, err := decodeVolID(req.GetVolumeId())
+	decoded, id, err := decodeAnyVolumeID(req.GetVolumeId())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid volume_id: %v", err)
+	}
+	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
+		return &csi.ControllerGetVolumeResponse{
+			Volume: &csi.Volume{
+				VolumeId:      req.GetVolumeId(),
+				CapacityBytes: decoded.CapacityBytes,
+				VolumeContext: volumeContextForVolumeID(decoded),
+			},
+			Status: &csi.ControllerGetVolumeResponse_VolumeStatus{
+				VolumeCondition: &csi.VolumeCondition{Abnormal: false, Message: "OK"},
+			},
+		}, nil
 	}
 	vi, err := cs.Driver.backend.GetVolumeInfo(ctx, id.VHDXPath)
 	if err != nil {
@@ -569,10 +994,7 @@ func (cs *ControllerServer) ControllerGetVolume(ctx context.Context, req *csi.Co
 	}
 	published, _ := cs.Driver.backend.GetTargetInitiators(ctx, id.TargetIQN)
 
-	lunStr := ""
-	if vi.LUN != nil {
-		lunStr = strconv.Itoa(int(*vi.LUN))
-	}
+	lunStr := volumeInfoLUNString(vi.LUN)
 	return &csi.ControllerGetVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      req.GetVolumeId(),

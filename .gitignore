@@ -14,6 +14,9 @@
 # Go workspace file
 go.work
 
+# JavaScript dependencies
+node_modules/
+
 # Go vendor directory (if not using Go modules)
 vendor/
 

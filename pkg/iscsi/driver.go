@@ -41,10 +41,43 @@ type Backend interface {
 	ResizeVirtualDisk(ctx context.Context, vhdxPath string, newSizeBytes int64) (int64, error)
 	GetVolumeInfo(ctx context.Context, vhdxPath string) (VolumeInfo, error)
 	GetTargetInitiators(ctx context.Context, targetIQN string) ([]string, error)
+
+	CreateNfsShare(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error)
+	GetNfsShare(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error)
+	DeleteNfsShare(ctx context.Context, name, path string) error
+	CreateSmbShare(ctx context.Context, name, parentDir string, sizeBytes int64, fullAccess, changeAccess, readAccess []string, opts ...SmbShareOptions) (VolumeInfo, error)
+	GetSmbShare(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error)
+	DeleteSmbShare(ctx context.Context, name, path string) error
+	ResizeFileShare(ctx context.Context, path string, newSizeBytes int64) (int64, error)
+	RestoreSnapshotAsFileShare(ctx context.Context, snapshotID, destinationPath string) error
+}
+
+type NfsShareOptions struct {
+	ClientType            string
+	Permission            string
+	AllowRootAccess       *bool
+	Authentication        []string
+	AnonymousUID          *int
+	AnonymousGID          *int
+	LanguageEncoding      string
+	EnableAnonymousAccess *bool
+	EnableUnmappedAccess  *bool
+}
+
+type SmbShareOptions struct {
+	NoAccess              []string
+	Description           string
+	EncryptData           *bool
+	CompressData          *bool
+	ContinuouslyAvailable *bool
+	CachingMode           string
+	FolderEnumerationMode string
+	ConcurrentUserLimit   uint32
 }
 
 type driver struct {
 	name     string
+	protocol Protocol
 	nodeID   string
 	version  string
 	endpoint string
@@ -55,29 +88,62 @@ type driver struct {
 }
 
 const driverName = "iscsi.csi.windows.microsoft.com"
+const nfsDriverName = "nfs.csi.windows.microsoft.com"
+const smbDriverName = "smb.csi.windows.microsoft.com"
 
 var version = "0.1.0"
 
 func NewDriver(nodeID, endpoint string) *driver {
-	klog.V(1).Infof("driver: %s version: %s nodeID: %s endpoint: %s", driverName, version, nodeID, endpoint)
+	return NewProtocolDriver(ProtocolISCSI, nodeID, endpoint)
+}
+
+func NewProtocolDriver(protocol Protocol, nodeID, endpoint string) *driver {
+	name, err := driverNameForProtocol(protocol)
+	if err != nil {
+		klog.Warningf("unknown driver protocol %q; defaulting to %s", protocol, ProtocolISCSI)
+		protocol = ProtocolISCSI
+		name = driverName
+	}
+	return newNamedProtocolDriver(name, protocol, nodeID, endpoint)
+}
+
+func NewNamedDriver(name, nodeID, endpoint string) *driver {
+	protocol, err := protocolForDriverName(name)
+	if err != nil {
+		klog.Warningf("unknown CSI driver name %q; defaulting protocol to %s", name, ProtocolISCSI)
+		protocol = ProtocolISCSI
+	}
+	return newNamedProtocolDriver(name, protocol, nodeID, endpoint)
+}
+
+func newNamedProtocolDriver(name string, protocol Protocol, nodeID, endpoint string) *driver {
+	klog.V(1).Infof("driver: %s protocol: %s version: %s nodeID: %s endpoint: %s", name, protocol, version, nodeID, endpoint)
 
 	d := &driver{
 		name:     driverName,
+		protocol: protocol,
 		version:  version,
 		nodeID:   nodeID,
 		endpoint: endpoint,
 	}
+	d.name = name
 
-	if err := os.MkdirAll(fmt.Sprintf("/var/run/%s", driverName), 0o755); err != nil {
-		panic(err)
+	if err := os.MkdirAll(fmt.Sprintf("/var/run/%s", name), 0o755); err != nil {
+		klog.Warningf("failed to create driver run directory: %v", err)
 	}
 
-	// Access modes we support for volumes
-	d.AddVolumeCapabilityAccessModes([]csi.VolumeCapability_AccessMode_Mode{
+	accessModes := []csi.VolumeCapability_AccessMode_Mode{
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER,
-	})
+	}
+	if protocol == ProtocolNFS || protocol == ProtocolSMB {
+		accessModes = append(accessModes,
+			csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
+			csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
+			csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER)
+	}
+	d.AddVolumeCapabilityAccessModes(accessModes)
 
 	// Advertise Controller RPCs we actually implement (see controllerserver.go). :contentReference[oaicite:1]{index=1}
 	d.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
@@ -92,6 +158,32 @@ func NewDriver(nodeID, endpoint string) *driver {
 	})
 
 	return d
+}
+
+func driverNameForProtocol(protocol Protocol) (string, error) {
+	switch protocol {
+	case ProtocolISCSI:
+		return driverName, nil
+	case ProtocolNFS:
+		return nfsDriverName, nil
+	case ProtocolSMB:
+		return smbDriverName, nil
+	default:
+		return "", fmt.Errorf("unknown protocol: %s", protocol)
+	}
+}
+
+func protocolForDriverName(name string) (Protocol, error) {
+	switch strings.TrimSpace(name) {
+	case driverName:
+		return ProtocolISCSI, nil
+	case nfsDriverName:
+		return ProtocolNFS, nil
+	case smbDriverName:
+		return ProtocolSMB, nil
+	default:
+		return "", fmt.Errorf("unknown CSI driver name: %s", name)
+	}
 }
 
 func NewNodeServer(d *driver) *nodeServer {
@@ -198,6 +290,7 @@ func newWinRMBackendFromEnv() (Backend, error) {
 		}
 	}
 	b := NewWinRMBackend(host, port, useTLS, insecure, user, pass, timeout)
+	b.Auth = getenvDefault("WINRM_AUTH", "basic")
 
 	if imp := strings.TrimSpace(os.Getenv("WINRM_PS_IMPORT")); imp != "" {
 		b.PSModuleImport = imp

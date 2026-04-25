@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/go:1-1.24-bookworm
+ARG BASE_IMAGE=mcr.microsoft.com/devcontainers/go:1.26-trixie
 
 # hadolint ignore=DL3006
 FROM $BASE_IMAGE
@@ -6,10 +6,15 @@ FROM $BASE_IMAGE
 # Set the shell to fail on errors and pipe failures
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Refresh the Yarn apt key inherited from the base image. The key bundled in
+# older devcontainer images can expire before the image itself is refreshed.
+RUN curl -fsSL https://dl.yarnpkg.com/debian/pubkey.gpg \
+    | gpg --batch --yes --dearmor -o /usr/share/keyrings/yarn-archive-keyring.gpg
+
 # Install Python
-ARG PYTHON_VERSION=3.11.2-1+b1
-ARG PYTHON_VENV_VERSION=3.11.2-1+b1
-ARG PIP_VERSION=23.0.1+dfsg-1
+ARG PYTHON_VERSION=3.13.5-1
+ARG PYTHON_VENV_VERSION=3.13.5-1
+ARG PIP_VERSION=25.1.1+dfsg-1
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       python3=${PYTHON_VERSION} \
@@ -19,23 +24,41 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node
-ARG NODE_VERSION=22
-ARG NODEJS_VERSION="22.10.0-1nodesource1"
+ARG NODE_VERSION=25
+ARG NODEJS_VERSION="25.9.0-1nodesource1"
 RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
     apt-get install -y --no-install-recommends nodejs=${NODEJS_VERSION} && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install npm and Bun
+ARG NPM_VERSION=11.13.0
+ARG BUN_VERSION=1.3.13
+ARG BUN_TARGET=bun-linux-x64
+RUN mkdir -p /usr/local/lib/node_modules/npm \
+    && curl -fsSL "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz" -o /tmp/npm.tgz \
+    && tar xzf /tmp/npm.tgz -C /usr/local/lib/node_modules/npm --strip-components=1 \
+    && ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${BUN_TARGET}.zip" -o /tmp/bun.zip \
+    && unzip -q /tmp/bun.zip -d /tmp \
+    && install -m 0755 "/tmp/${BUN_TARGET}/bun" /usr/local/bin/bun \
+    && rm -rf /tmp/npm.tgz /tmp/bun.zip "/tmp/${BUN_TARGET}" \
+    && node --version \
+    && npm --version \
+    && bun --version
+
 #Get Docker CLI
-ARG DOCKER_CLI_VERSION="5:28.2.2-1~debian.12~bookworm"
-ARG DOCKER_BUILDX_VERSION="0.24.0-1~debian.12~bookworm"
-ARG CONTAINERD_VERSION="1.7.27-1"
-ARG DOCKER_COMPOSE_PLUGIN="2.36.2-1~debian.12~bookworm"
+ARG DEBIAN_CODENAME=trixie
+ARG DOCKER_CLI_VERSION="5:29.4.1-1~debian.13~trixie"
+ARG DOCKER_BUILDX_VERSION="0.33.0-1~debian.13~trixie"
+ARG CONTAINERD_VERSION="2.2.3-1~debian.13~trixie"
+ARG DOCKER_COMPOSE_PLUGIN="5.1.3-1~debian.13~trixie"
 RUN mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
     echo \
     "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
-    bookworm stable" > /etc/apt/sources.list.d/docker.list && \
+    ${DEBIAN_CODENAME} stable" > /etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       docker-ce-cli=${DOCKER_CLI_VERSION} \
@@ -56,7 +79,7 @@ RUN curl -sSL https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv
 
 # Export site-packages to PYTHONPATH explicitly
 ENV PATH="/usr/local/bin:$PATH"
-ENV PYTHONPATH="/usr/local/lib/python3.11/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+ENV PYTHONPATH="/usr/local/lib/python3.13/site-packages"
 
 # Get pre-commit
 ARG PRECOMMIT_VERSION=4.2.0
@@ -89,14 +112,13 @@ RUN curl -sSL https://github.com/hadolint/hadolint/releases/download/v${HADOLINT
     && chmod +x /usr/bin/hadolint
 
 # Get trivy
-ARG TRIVY_VERSION=0.63.0
-RUN curl -sSL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -o trivy.tar.gz \
-    && tar -xf trivy.tar.gz \
+ARG TRIVY_VERSION=0.70.0
+RUN curl -fsSL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -o trivy.tar.gz \
+    && tar xzf trivy.tar.gz \
     && mv trivy /usr/bin/ \
-    && mv contrib /home/vscode \
-    && chown -R vscode:vscode /home/vscode/contrib \
+    && if [ -d contrib ]; then mv contrib /home/vscode && chown -R vscode:vscode /home/vscode/contrib; fi \
     && chmod +x /usr/bin/trivy \
-    && rm -f trivy.tar.gz \
+    && rm -f trivy.tar.gz LICENSE README.md \
     && su vscode -c "trivy image --download-db-only --no-progress"
 
 # golangci-lint
@@ -146,7 +168,7 @@ RUN mkdir -p /home/${CONTAINER_USER}/.kube /home/${CONTAINER_USER}/.ssh /workspa
 USER ${CONTAINER_USER}
 
 # goimports
-ARG GOIMPORTS_VERSION=v0.20.0
+ARG GOIMPORTS_VERSION=v0.44.0
 RUN go install golang.org/x/tools/cmd/goimports@${GOIMPORTS_VERSION}
 
 CMD ["sleep", "infinity"]

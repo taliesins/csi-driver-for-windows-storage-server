@@ -6,7 +6,7 @@ services:
       context: ..
       dockerfile: ./.devcontainer/Dockerfile
       args:
-        BASE_IMAGE: mcr.microsoft.com/devcontainers/go:1-1.24-bookworm
+        BASE_IMAGE: mcr.microsoft.com/devcontainers/go:1.26-trixie
     env_file: ./.env.devcontainer
     volumes:
       - ..:/workspace/:cached

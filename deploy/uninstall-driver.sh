@@ -33,7 +33,11 @@ if [ "$ver" != "master" ]; then
   repo="$repo/$ver"
 fi
 
-echo "Uninstalling iscsi.csi.windows.microsoft.com CSI driver, version: $ver ..."
-kubectl delete -f "$repo/csi-iscsi-for-windows-driverinfo.yaml"
-kubectl delete -f "$repo/csi-iscsi-for-windows-node.yaml"
-echo 'iscsi.csi.windows.microsoft.com CSI driver uninstalled successfully.'
+echo "Uninstalling Windows storage CSI drivers, version: $ver ..."
+kubectl delete -f "$repo/csi-smb-for-windows-node.yaml" --ignore-not-found
+kubectl delete -f "$repo/csi-nfs-for-windows-node.yaml" --ignore-not-found
+kubectl delete -f "$repo/csi-iscsi-for-windows-node.yaml" --ignore-not-found
+kubectl delete -f "$repo/csi-smb-for-windows-driverinfo.yaml" --ignore-not-found
+kubectl delete -f "$repo/csi-nfs-for-windows-driverinfo.yaml" --ignore-not-found
+kubectl delete -f "$repo/csi-iscsi-for-windows-driverinfo.yaml" --ignore-not-found
+echo 'Windows storage CSI drivers uninstalled successfully.'

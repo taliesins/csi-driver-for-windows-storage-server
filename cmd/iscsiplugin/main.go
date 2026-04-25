@@ -25,8 +25,9 @@ import (
 )
 
 var (
-	endpoint = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
-	nodeID   = flag.String("nodeid", "", "node id")
+	endpoint   = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
+	nodeID     = flag.String("nodeid", "", "node id")
+	driverName = flag.String("drivername", os.Getenv("CSI_DRIVER_NAME"), "CSI driver name")
 )
 
 func init() {
@@ -41,5 +42,8 @@ func main() {
 
 func handle() {
 	d := iscsi.NewDriver(*nodeID, *endpoint)
+	if *driverName != "" {
+		d = iscsi.NewNamedDriver(*driverName, *nodeID, *endpoint)
+	}
 	d.Run()
 }
