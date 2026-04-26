@@ -1,0 +1,101 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: csi-nfs-vhdx-node
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: csi-nfs-vhdx-node
+  template:
+    metadata:
+      labels:
+        app: csi-nfs-vhdx-node
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --probe-timeout=3s
+            - --health-port=29756
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0
+          securityContext:
+            privileged: true
+          args:
+            - --v=2
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/nfs-vhdx.csi.windows.microsoft.com/csi.sock
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+        - name: nfs-vhdx
+          image: gcr.io/k8s-staging-sig-storage/iscsiplugin:canary
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            allowPrivilegeEscalation: true
+          args:
+            - --nodeid=$(NODE_ID)
+            - --endpoint=$(CSI_ENDPOINT)
+            - --drivername=nfs-vhdx.csi.windows.microsoft.com
+            - --v=5
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+          ports:
+            - containerPort: 29756
+              name: healthz
+              protocol: TCP
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: mountpoint-dir
+              mountPath: /var/lib/kubelet/
+              mountPropagation: Bidirectional
+            - name: host-root
+              mountPath: /host
+              mountPropagation: HostToContainer
+            - name: nfs-vhdx-csi-run-dir
+              mountPath: /var/run/nfs-vhdx.csi.windows.microsoft.com
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/nfs-vhdx.csi.windows.microsoft.com
+            type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: nfs-vhdx-csi-run-dir
+          hostPath:
+            path: /var/run/nfs-vhdx.csi.windows.microsoft.com
+            type: DirectoryOrCreate

@@ -36,8 +36,12 @@ fi
 echo "Installing Windows storage CSI drivers, version: $ver ..."
 kubectl apply -f "$repo/csi-iscsi-for-windows-driverinfo.yaml"
 kubectl apply -f "$repo/csi-nfs-for-windows-driverinfo.yaml"
+kubectl apply -f "$repo/csi-nfs-vhdx-for-windows-driverinfo.yaml"
 kubectl apply -f "$repo/csi-smb-for-windows-driverinfo.yaml"
+kubectl apply -f "$repo/csi-smb-vhdx-for-windows-driverinfo.yaml"
 kubectl apply -f "$repo/csi-iscsi-for-windows-node.yaml"
 kubectl apply -f "$repo/csi-nfs-for-windows-node.yaml"
+kubectl apply -f "$repo/csi-nfs-vhdx-for-windows-node.yaml"
 kubectl apply -f "$repo/csi-smb-for-windows-node.yaml"
+kubectl apply -f "$repo/csi-smb-vhdx-for-windows-node.yaml"
 echo 'Windows storage CSI drivers installed successfully.'

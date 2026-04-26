@@ -7,7 +7,7 @@ IMAGE_NAME ?= $(APP_NAME)
 IMAGE_TAG ?= latest
 PLATFORM ?= linux/amd64
 
-.PHONY: all build test image release lint pre-commit clean
+.PHONY: all build test integration-test image release lint pre-commit clean
 
 all: build
 
@@ -16,6 +16,9 @@ build:
 
 test:
 	go test ./...
+
+integration-test:
+	go test -tags integration ./pkg/iscsi
 
 image:
 	docker buildx build --platform=$(PLATFORM) -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) .

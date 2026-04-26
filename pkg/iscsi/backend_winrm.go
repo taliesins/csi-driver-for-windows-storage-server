@@ -3,6 +3,7 @@ package iscsi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,6 +20,14 @@ type Endpoint = winrm.Endpoint
 
 type powerShellRunner func(ctx context.Context, script string, out any) error
 
+type winRMClient interface {
+	RunPSWithContextWithString(ctx context.Context, command string, stdin string) (string, string, int, error)
+}
+
+var newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+	return winrm.NewClientWithParameters(endpoint, user, password, params)
+}
+
 type winRMSnapshotOutput struct {
 	SnapshotID   string    `json:"snapshotId"`
 	OriginalPath string    `json:"originalPath"`
@@ -29,6 +38,56 @@ type winRMSnapshotOutput struct {
 
 type winRMSnapshotListOutput struct {
 	Snapshots []winRMSnapshotOutput `json:"snapshots"`
+}
+
+const fileShareSnapshotIDPrefix = "vss://"
+
+type fileShareSnapshotHandle struct {
+	SnapshotType       string    `json:"snapshotType"`
+	ShadowID           string    `json:"shadowId"`
+	ShadowDeviceObject string    `json:"shadowDeviceObject"`
+	ShadowPath         string    `json:"shadowPath"`
+	SourceRelativePath string    `json:"sourceRelativePath"`
+	OriginalPath       string    `json:"originalPath"`
+	Description        string    `json:"description"`
+	CreatedAt          time.Time `json:"createdAt"`
+	SizeBytes          int64     `json:"sizeBytes"`
+}
+
+func encodeFileShareSnapshotHandle(handle fileShareSnapshotHandle) (string, error) {
+	if strings.TrimSpace(handle.SnapshotType) == "" {
+		handle.SnapshotType = "vss"
+	}
+	data, err := json.Marshal(handle)
+	if err != nil {
+		return "", err
+	}
+	return fileShareSnapshotIDPrefix + base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func decodeFileShareSnapshotHandle(snapshotID string) (fileShareSnapshotHandle, bool, error) {
+	if !strings.HasPrefix(snapshotID, fileShareSnapshotIDPrefix) {
+		return fileShareSnapshotHandle{}, false, nil
+	}
+	encoded := strings.TrimPrefix(snapshotID, fileShareSnapshotIDPrefix)
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return fileShareSnapshotHandle{}, true, fmt.Errorf("invalid file-share snapshot handle: %w", err)
+	}
+	var handle fileShareSnapshotHandle
+	if err := json.Unmarshal(data, &handle); err != nil {
+		return fileShareSnapshotHandle{}, true, fmt.Errorf("invalid file-share snapshot handle: %w", err)
+	}
+	if strings.TrimSpace(handle.SnapshotType) == "" {
+		handle.SnapshotType = "vss"
+	}
+	if !strings.EqualFold(handle.SnapshotType, "vss") {
+		return fileShareSnapshotHandle{}, true, fmt.Errorf("unsupported file-share snapshot type %q", handle.SnapshotType)
+	}
+	if strings.TrimSpace(handle.ShadowID) == "" {
+		return fileShareSnapshotHandle{}, true, fmt.Errorf("file-share snapshot handle is missing shadowId")
+	}
+	return handle, true, nil
 }
 
 type WinRMBackend struct {
@@ -105,7 +164,7 @@ func (b *WinRMBackend) runPS(ctx context.Context, script string, out any) error 
 		return err
 	}
 
-	client, err := winrm.NewClientWithParameters(b.Endpoint, b.User, b.Pass, params)
+	client, err := newWinRMClientWithParameters(b.Endpoint, b.User, b.Pass, params)
 	if err != nil {
 		return fmt.Errorf("winrm.NewClient: %w", err)
 	}
@@ -122,7 +181,7 @@ func (b *WinRMBackend) runPS(ctx context.Context, script string, out any) error 
 
 	go func() {
 		defer close(done)
-		stdout, stderr, exitCode, runErr = client.RunPSWithContext(ctx, ps)
+		stdout, stderr, exitCode, runErr = client.RunPSWithContextWithString(ctx, "Invoke-Expression ([Console]::In.ReadToEnd())", ps)
 	}()
 
 	select {
@@ -319,10 +378,31 @@ $psd = Get-PSDrive -Name $drive
 
 // ------------------- Snapshots -------------------
 
+const fileShareShadowCopyPS = `
+function Get-CsiShadowCopy([string]$ShadowId) {
+  @(Get-CimInstance -ClassName Win32_ShadowCopy -ErrorAction SilentlyContinue | Where-Object { $_.ID -eq $ShadowId } | Select-Object -First 1)[0]
+}
+function New-CsiShadowCopy([string]$VolumeRoot) {
+  Invoke-CimMethod -ClassName Win32_ShadowCopy -MethodName Create -Arguments @{ Volume=$VolumeRoot; Context='ClientAccessible' }
+}
+function Remove-CsiShadowCopy([string]$ShadowId) {
+  $shadow = Get-CsiShadowCopy $ShadowId
+  if ($shadow) { $shadow | Remove-CimInstance -ErrorAction SilentlyContinue | Out-Null }
+}
+function Join-CsiShadowPath([string]$DeviceObject, [string]$RelativePath) {
+  $root = $DeviceObject.TrimEnd('\')
+  if ([string]::IsNullOrWhiteSpace($RelativePath)) { return ($root + '\') }
+  return ($root + '\' + $RelativePath.TrimStart('\'))
+}
+`
+
 func (b *WinRMBackend) CreateSnapshot(ctx context.Context, vhdxPath, description string) (SnapshotInfo, error) {
-	var s string
-	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(vhdxPath)), ".vhdx") {
-		s = fmt.Sprintf(`
+	isVirtualDisk := strings.HasSuffix(strings.ToLower(strings.TrimSpace(vhdxPath)), ".vhdx")
+	if !isVirtualDisk {
+		return SnapshotInfo{}, fmt.Errorf("directory-backed file-share snapshots are not supported; use a VHDX-backed NFS/SMB driver")
+	}
+
+	s := fmt.Sprintf(`
 $description = '%s'
 $null = Checkpoint-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -OriginalPath '%s' -Description $description
 $g = $null
@@ -349,35 +429,17 @@ if ($null -ne $g.CreationTime) {
   sizeBytes    = 0
 }
 `, escapePS(description), escapePS(vhdxPath), escapePS(vhdxPath), escapePS(vhdxPath))
-	} else {
-		s = fmt.Sprintf(`
-$sourcePath = '%s'
-$description = '%s'
-%s
-if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) { throw "file-share snapshot source path not found: $sourcePath" }
-$parent = Split-Path -Parent $sourcePath
-if ([string]::IsNullOrWhiteSpace($parent)) { $parent = $sourcePath }
-$root = Join-Path -Path $parent -ChildPath '.csi-snapshots'
-New-Item -ItemType Directory -Path $root -Force | Out-Null
-$safe = ($description -replace '[^A-Za-z0-9_.-]', '_').Trim('_')
-if ([string]::IsNullOrWhiteSpace($safe)) { $safe = [guid]::NewGuid().ToString('N') }
-$snapshotPath = Join-Path -Path $root -ChildPath $safe
-if (Test-Path -LiteralPath $snapshotPath) {
-  $snapshotPath = Join-Path -Path $root -ChildPath "$safe-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-}
-Copy-CsiDirectoryMirror $sourcePath $snapshotPath
-$createdAt = (Get-Date).ToUniversalTime().ToString('o')
-$meta = @{ snapshotId=$snapshotPath; originalPath=$sourcePath; description=$description; createdAt=$createdAt; sizeBytes=[int64]0 }
-$meta | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path -Path $snapshotPath -ChildPath '.csi-snapshot.json') -Encoding UTF8
-$meta
-`, escapePS(vhdxPath), escapePS(description), fileShareCopyPS)
-	}
 	var out struct {
-		SnapshotID   string    `json:"snapshotId"`
-		OriginalPath string    `json:"originalPath"`
-		Description  string    `json:"description"`
-		CreatedAt    time.Time `json:"createdAt"`
-		SizeBytes    int64     `json:"sizeBytes"`
+		SnapshotID         string    `json:"snapshotId"`
+		SnapshotType       string    `json:"snapshotType"`
+		ShadowID           string    `json:"shadowId"`
+		ShadowDeviceObject string    `json:"shadowDeviceObject"`
+		ShadowPath         string    `json:"shadowPath"`
+		SourceRelativePath string    `json:"sourceRelativePath"`
+		OriginalPath       string    `json:"originalPath"`
+		Description        string    `json:"description"`
+		CreatedAt          time.Time `json:"createdAt"`
+		SizeBytes          int64     `json:"sizeBytes"`
 	}
 	if err := b.runPS(ctx, s, &out); err != nil {
 		return SnapshotInfo{}, err
@@ -392,16 +454,36 @@ $meta
 }
 
 func (b *WinRMBackend) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if handle, ok, err := decodeFileShareSnapshotHandle(snapshotID); ok {
+		if err != nil {
+			return err
+		}
+		s := fmt.Sprintf(`
+%s
+Remove-CsiShadowCopy '%s'
+@{ ok=$true }
+`, fileShareShadowCopyPS, escapePS(handle.ShadowID))
+		var out map[string]any
+		return b.runPS(ctx, s, &out)
+	}
+
 	s := fmt.Sprintf(`
+%s
 $snapshotID = '%s'
 $snapshotGuid = [guid]::Empty
 if ([guid]::TryParse($snapshotID, [ref]$snapshotGuid) -and (Get-IscsiVirtualDiskSnapshot -ComputerName $IscsiTargetComputerName -SnapshotId $snapshotID -ErrorAction SilentlyContinue)) {
   Remove-IscsiVirtualDiskSnapshot -ComputerName $IscsiTargetComputerName -SnapshotId $snapshotID -ErrorAction SilentlyContinue
+} elseif (Test-Path -LiteralPath $snapshotID -PathType Leaf) {
+  $meta = Get-Content -LiteralPath $snapshotID -Raw | ConvertFrom-Json
+  if ($meta.snapshotType -eq 'vss' -and $meta.shadowId) {
+    Remove-CsiShadowCopy ([string]$meta.shadowId)
+  }
+  Remove-Item -LiteralPath $snapshotID -Force -ErrorAction SilentlyContinue
 } elseif (Test-Path -LiteralPath $snapshotID -PathType Container) {
   Remove-Item -LiteralPath $snapshotID -Recurse -Force -ErrorAction SilentlyContinue
 }
 @{ ok=$true }
-`, escapePS(snapshotID))
+`, fileShareShadowCopyPS, escapePS(snapshotID))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
@@ -419,24 +501,7 @@ $sn = @(Get-IscsiVirtualDiskSnapshot -ComputerName $IscsiTargetComputerName -Ori
 @{ snapshots=$sn }
 `, escapePS(vhdxPath), escapePS(vhdxPath))
 	} else {
-		s = fmt.Sprintf(`
-$sourcePath = '%s'
-$root = Join-Path -Path (Split-Path -Parent $sourcePath) -ChildPath '.csi-snapshots'
-if (Test-Path -LiteralPath $root -PathType Container) {
-  $sn = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-    $metaPath = Join-Path -Path $_.FullName -ChildPath '.csi-snapshot.json'
-    if (Test-Path -LiteralPath $metaPath) {
-      $meta = Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
-      if ($meta.originalPath -eq $sourcePath) {
-        @{ snapshotId=[string]$meta.snapshotId; originalPath=[string]$meta.originalPath; description=[string]$meta.description; createdAt=[string]$meta.createdAt; sizeBytes=[int64]$meta.sizeBytes }
-      }
-    }
-  })
-} else {
-  $sn = @()
-}
-@{ snapshots=$sn }
-`, escapePS(vhdxPath))
+		return []SnapshotInfo{}, nil
 	}
 	var out winRMSnapshotListOutput
 	if err := b.runPS(ctx, s, &out); err != nil {

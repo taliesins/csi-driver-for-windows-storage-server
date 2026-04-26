@@ -1,0 +1,19 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: iscsi-for-windows-rwo
+provisioner: iscsi.csi.windows.microsoft.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  vhdxParentPath: "E:\\iSCSIVirtualDisks"
+  iqnPrefix: "iqn.2025-08.lab.example"
+  targetPortal: "win-storage.lab.local"
+  portalPort: "3260"
+
+  csi.storage.k8s.io/fstype: "xfs"
+
+  csi.storage.k8s.io/node-stage-secret-name: "iscsi-chap"
+  csi.storage.k8s.io/node-stage-secret-namespace: "${pvc.namespace}"
+  # iface: "default"

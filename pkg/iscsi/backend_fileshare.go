@@ -95,6 +95,73 @@ func smbShareParamsScript(opt SmbShareOptions) string {
 
 const fileShareCopyPS = `function Copy-CsiDirectoryMirror($s,$d){New-Item -ItemType Directory -Path $d -Force|Out-Null;robocopy $s $d /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP|Out-Null;$c=$LASTEXITCODE;$global:LASTEXITCODE=0;if($c -gt 7){throw "robocopy failed with exit code $c"}}`
 
+const fileShareCopyItemPS = `function Copy-CsiDirectoryTree($s,$d){New-Item -ItemType Directory -Path $d -Force|Out-Null;@(Get-ChildItem -LiteralPath $s -Force -ErrorAction Stop)|ForEach-Object{Copy-Item -LiteralPath $_.FullName -Destination $d -Recurse -Force -ErrorAction Stop}}`
+
+const fileShareVHDXPS = `
+function Get-CsiAccessPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+  $full = [System.IO.Path]::GetFullPath($Path)
+  if (-not $full.EndsWith('\')) { $full += '\' }
+  return $full
+}
+function Get-CsiPartitionByAccessPath([string]$Path) {
+  $accessPath = Get-CsiAccessPath $Path
+  if ([string]::IsNullOrWhiteSpace($accessPath)) { return $null }
+  @(Get-Partition -ErrorAction SilentlyContinue | Where-Object { @($_.AccessPaths) -contains $accessPath } | Select-Object -First 1)[0]
+}
+function Test-CsiPartitionAccessPath([string]$Path) {
+  $null -ne (Get-CsiPartitionByAccessPath $Path)
+}
+function Expand-CsiPartitionToDisk([object]$Partition) {
+  if (-not $Partition) { return }
+  $supported = Get-PartitionSupportedSize -DiskNumber $Partition.DiskNumber -PartitionNumber $Partition.PartitionNumber -ErrorAction SilentlyContinue
+  if ($supported -and [int64]$supported.SizeMax -gt [int64]$Partition.Size) {
+    Resize-Partition -DiskNumber $Partition.DiskNumber -PartitionNumber $Partition.PartitionNumber -Size $supported.SizeMax -ErrorAction Stop
+  }
+}
+function Mount-CsiFileShareVirtualDisk([string]$VhdxPath, [string]$MountPath) {
+  New-Item -ItemType Directory -Path $MountPath -Force | Out-Null
+  $image = Get-DiskImage -ImagePath $VhdxPath -ErrorAction SilentlyContinue
+  if (-not $image -or -not $image.Attached) {
+    Mount-DiskImage -ImagePath $VhdxPath -PassThru -ErrorAction Stop | Out-Null
+  }
+  $disk = Get-DiskImage -ImagePath $VhdxPath -ErrorAction Stop | Get-Disk -ErrorAction Stop
+  if ($disk.IsOffline) { Set-Disk -Number $disk.Number -IsOffline $false -ErrorAction Stop }
+  if ($disk.IsReadOnly) { Set-Disk -Number $disk.Number -IsReadOnly $false -ErrorAction Stop }
+  if ($disk.PartitionStyle -eq 'RAW') {
+    Initialize-Disk -Number $disk.Number -PartitionStyle GPT -ErrorAction Stop
+  }
+  $partition = @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object { $_.Type -ne 'Reserved' } | Sort-Object PartitionNumber | Select-Object -First 1)[0]
+  if (-not $partition) {
+    $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize -ErrorAction Stop
+  }
+  $volume = $partition | Get-Volume -ErrorAction SilentlyContinue
+  if (-not $volume -or [string]::IsNullOrWhiteSpace($volume.FileSystem)) {
+    Format-Volume -Partition $partition -FileSystem NTFS -NewFileSystemLabel 'CSIFileShare' -Confirm:$false -Force -ErrorAction Stop | Out-Null
+  }
+  $partition = Get-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -ErrorAction Stop
+  Expand-CsiPartitionToDisk $partition
+  $partition = Get-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -ErrorAction Stop
+  $accessPath = Get-CsiAccessPath $MountPath
+  if (@($partition.AccessPaths) -notcontains $accessPath) {
+    Add-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -AccessPath $accessPath -ErrorAction Stop
+  }
+}
+function Dismount-CsiFileShareVirtualDisk([string]$VhdxPath, [string]$MountPath) {
+  $partition = Get-CsiPartitionByAccessPath $MountPath
+  if ($partition) {
+    Remove-PartitionAccessPath -DiskNumber $partition.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath (Get-CsiAccessPath $MountPath) -ErrorAction SilentlyContinue
+  }
+  $image = Get-DiskImage -ImagePath $VhdxPath -ErrorAction SilentlyContinue
+  if ($image -and $image.Attached) {
+    Dismount-DiskImage -ImagePath $VhdxPath -ErrorAction SilentlyContinue
+  }
+  if ($MountPath -and (Test-Path -LiteralPath $MountPath)) {
+    Remove-Item -LiteralPath $MountPath -Force -ErrorAction SilentlyContinue
+  }
+}
+`
+
 func splitCSVParam(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
@@ -105,6 +172,26 @@ func splitCSVParam(value string) []string {
 		}
 	}
 	return out
+}
+
+func (b *WinRMBackend) MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	s := fmt.Sprintf(`
+%s
+Mount-CsiFileShareVirtualDisk '%s' '%s'
+@{ ok=$true }
+`, fileShareVHDXPS, escapePS(vhdxPath), escapePS(mountPath))
+	var out map[string]any
+	return b.runPS(ctx, s, &out)
+}
+
+func (b *WinRMBackend) UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	s := fmt.Sprintf(`
+%s
+Dismount-CsiFileShareVirtualDisk '%s' '%s'
+@{ ok=$true }
+`, fileShareVHDXPS, escapePS(vhdxPath), escapePS(mountPath))
+	var out map[string]any
+	return b.runPS(ctx, s, &out)
 }
 
 func (b *WinRMBackend) CreateNfsShare(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error) {
@@ -166,6 +253,7 @@ foreach ($client in $clients) {
 		NfsServer:     out.NfsServer,
 		NfsExportPath: out.NfsExportPath,
 		VHDXPath:      out.VHDXPath,
+		SharePath:     out.VHDXPath,
 		SizeBytes:     out.SizeBytes,
 		CapacityBytes: out.CapacityBytes,
 	}, nil
@@ -201,12 +289,13 @@ if (-not $share) {
 	if !out.Exists {
 		return false, VolumeInfo{}, nil
 	}
-	return true, VolumeInfo{VolumeName: out.Name, Protocol: ProtocolNFS, NfsServer: out.NfsServer, NfsExportPath: out.NfsExportPath, VHDXPath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
+	return true, VolumeInfo{VolumeName: out.Name, Protocol: ProtocolNFS, NfsServer: out.NfsServer, NfsExportPath: out.NfsExportPath, VHDXPath: out.VHDXPath, SharePath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
 }
 
 func (b *WinRMBackend) DeleteNfsShare(ctx context.Context, name, path string) error {
 	s := fmt.Sprintf(`
 Import-Module NFS -ErrorAction Stop
+%s
 $name = '%s'
 $path = '%s'
 $share = Get-NfsShare -Name $name -ErrorAction SilentlyContinue
@@ -218,10 +307,12 @@ if ($share) {
 }
 if ($path -and (Test-Path -LiteralPath $path)) {
   if (Get-Command Remove-FsrmQuota -ErrorAction SilentlyContinue) { Remove-FsrmQuota -Path $path -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }
-  Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+  if (-not (Test-CsiPartitionAccessPath $path)) {
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 @{ ok=$true }
-`, escapePS(name), escapePS(path))
+`, fileShareVHDXPS, escapePS(name), escapePS(path))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
@@ -269,7 +360,7 @@ if (-not $share) {
 		}
 		out.CapacityBytes = actual
 	}
-	return VolumeInfo{VolumeName: out.Name, Protocol: ProtocolSMB, SmbServer: out.SmbServer, SmbShareName: out.SmbShareName, VHDXPath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
+	return VolumeInfo{VolumeName: out.Name, Protocol: ProtocolSMB, SmbServer: out.SmbServer, SmbShareName: out.SmbShareName, VHDXPath: out.VHDXPath, SharePath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
 }
 
 func (b *WinRMBackend) GetSmbShare(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
@@ -301,12 +392,13 @@ if (-not $share) {
 	if !out.Exists {
 		return false, VolumeInfo{}, nil
 	}
-	return true, VolumeInfo{VolumeName: out.Name, Protocol: ProtocolSMB, SmbServer: out.SmbServer, SmbShareName: out.SmbShareName, VHDXPath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
+	return true, VolumeInfo{VolumeName: out.Name, Protocol: ProtocolSMB, SmbServer: out.SmbServer, SmbShareName: out.SmbShareName, VHDXPath: out.VHDXPath, SharePath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
 }
 
 func (b *WinRMBackend) DeleteSmbShare(ctx context.Context, name, path string) error {
 	s := fmt.Sprintf(`
 Import-Module SmbShare -ErrorAction Stop
+%s
 $name = '%s'
 $path = '%s'
 $share = Get-SmbShare -Name $name -ErrorAction SilentlyContinue
@@ -318,10 +410,12 @@ if ($share) {
 }
 if ($path -and (Test-Path -LiteralPath $path)) {
   if (Get-Command Remove-FsrmQuota -ErrorAction SilentlyContinue) { Remove-FsrmQuota -Path $path -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }
-  Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+  if (-not (Test-CsiPartitionAccessPath $path)) {
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 @{ ok=$true }
-`, escapePS(name), escapePS(path))
+`, fileShareVHDXPS, escapePS(name), escapePS(path))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
@@ -353,14 +447,68 @@ if (Get-Command New-FsrmQuota -ErrorAction SilentlyContinue) {
 }
 
 func (b *WinRMBackend) RestoreSnapshotAsFileShare(ctx context.Context, snapshotID, destinationPath string) error {
+	if handle, ok, err := decodeFileShareSnapshotHandle(snapshotID); ok {
+		if err != nil {
+			return err
+		}
+		s := fmt.Sprintf(`
+%s
+%s
+$shadowID = '%s'
+$sourceRelativePath = '%s'
+$storedShadowPath = '%s'
+$shadow = Get-CsiShadowCopy $shadowID
+if (-not $shadow) {
+  throw "file-share VSS snapshot was not found: $shadowID"
+}
+if (-not [string]::IsNullOrWhiteSpace($sourceRelativePath)) {
+  $sourcePath = Join-CsiShadowPath ([string]$shadow.DeviceObject) $sourceRelativePath
+} else {
+  $sourcePath = $storedShadowPath
+}
+if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+  throw "file-share snapshot path not found: $sourcePath"
+}
+Copy-CsiDirectoryTree $sourcePath '%s'
+@{ ok=$true }
+`, fileShareCopyItemPS, fileShareShadowCopyPS, escapePS(handle.ShadowID), escapePS(handle.SourceRelativePath), escapePS(handle.ShadowPath), escapePS(destinationPath))
+		var out map[string]any
+		return b.runPS(ctx, s, &out)
+	}
+
 	s := fmt.Sprintf(`
 %s
-if (-not (Test-Path -LiteralPath '%s' -PathType Container)) {
-  throw "file-share snapshot path not found: %s"
+%s
+%s
+$snapshotID = '%s'
+$sourcePath = $snapshotID
+$isVssSnapshot = $false
+if (Test-Path -LiteralPath $snapshotID -PathType Leaf) {
+  $meta = Get-Content -LiteralPath $snapshotID -Raw | ConvertFrom-Json
+  if ($meta.snapshotType -eq 'vss') {
+    $isVssSnapshot = $true
+    $shadow = Get-CsiShadowCopy ([string]$meta.shadowId)
+    if (-not $shadow) {
+      throw "file-share VSS snapshot was not found: $($meta.shadowId)"
+    }
+    $sourcePath = [string]$meta.shadowPath
+    if ([string]::IsNullOrWhiteSpace($sourcePath) -and $meta.sourceRelativePath) {
+      $sourcePath = Join-CsiShadowPath ([string]$shadow.DeviceObject) ([string]$meta.sourceRelativePath)
+    }
+  } elseif ($meta.snapshotId) {
+    $sourcePath = [string]$meta.snapshotId
+  }
 }
-Copy-CsiDirectoryMirror '%s' '%s'
+if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+  throw "file-share snapshot path not found: $sourcePath"
+}
+if ($isVssSnapshot) {
+  Copy-CsiDirectoryTree $sourcePath '%s'
+} else {
+  Copy-CsiDirectoryMirror $sourcePath '%s'
+}
 @{ ok=$true }
-`, fileShareCopyPS, escapePS(snapshotID), escapePS(snapshotID), escapePS(snapshotID), escapePS(destinationPath))
+`, fileShareCopyPS, fileShareCopyItemPS, fileShareShadowCopyPS, escapePS(snapshotID), escapePS(destinationPath), escapePS(destinationPath))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }

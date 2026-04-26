@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: preprovisioned-nfs-vhdx
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-vhdx-for-windows-rwx
+  csi:
+    driver: nfs-vhdx.csi.windows.microsoft.com
+    volumeHandle: "nfs://win-storage.lab.local/preprovisioned-nfs-vhdx?name=preprovisioned-nfs-vhdx&shareBackend=vhdx&sharePath=E%3A%5CNfsVhdxShares%5Cpreprovisioned-nfs-vhdx&vhdxPath=E%3A%5CNfsShareVhdx%5Cpreprovisioned-nfs-vhdx.vhdx&capacityBytes=107374182400"
+    volumeAttributes: {}

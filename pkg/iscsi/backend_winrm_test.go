@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/masterzen/winrm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,6 +69,173 @@ func TestWinRMBackend_ClientParametersAuth(t *testing.T) {
 			require.NotNil(t, params)
 		})
 	}
+}
+
+type fakeWinRMClient struct {
+	stdout  string
+	stderr  string
+	code    int
+	err     error
+	command string
+	stdin   string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f *fakeWinRMClient) RunPSWithContextWithString(ctx context.Context, command string, stdin string) (string, string, int, error) {
+	f.command = command
+	f.stdin = stdin
+	if f.started != nil {
+		close(f.started)
+	}
+	if f.release != nil {
+		<-f.release
+	}
+	return f.stdout, f.stderr, f.code, f.err
+}
+
+func TestWinRMBackend_RunPS(t *testing.T) {
+	t.Run("decodes JSON and wraps script", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		backend.PSModuleImport = ""
+		fakeClient := &fakeWinRMClient{stdout: `{"ok":true}`}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			assert.Equal(t, backend.Endpoint, endpoint)
+			assert.Equal(t, "admin", user)
+			assert.Equal(t, "pass", password)
+			require.NotNil(t, params)
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		var out struct {
+			OK bool `json:"ok"`
+		}
+		err := backend.runPS(context.Background(), "@{ ok = $true }", &out)
+		require.NoError(t, err)
+		assert.True(t, out.OK)
+		assert.Equal(t, "Invoke-Expression ([Console]::In.ReadToEnd())", fakeClient.command)
+		assert.Contains(t, fakeClient.stdin, "Import-Module IscsiTarget")
+		assert.Contains(t, fakeClient.stdin, "@{ ok = $true }")
+		assert.Contains(t, fakeClient.stdin, "ConvertTo-Json")
+		assert.Equal(t, "Import-Module IscsiTarget", backend.PSModuleImport)
+	})
+
+	t.Run("nil output allows empty stdout", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		backend.PSModuleImport = "Import-Module Custom"
+		fakeClient := &fakeWinRMClient{}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		require.NoError(t, backend.runPS(context.Background(), "Do-Something", nil))
+		assert.Contains(t, fakeClient.stdin, "Import-Module Custom")
+	})
+
+	t.Run("client construction error", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return nil, errors.New("dial failed")
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		err := backend.runPS(context.Background(), "Do-Something", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "winrm.NewClient")
+		assert.Contains(t, err.Error(), "dial failed")
+	})
+
+	t.Run("run error includes stderr", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		fakeClient := &fakeWinRMClient{stderr: "remote stderr", err: errors.New("transport failed")}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		err := backend.runPS(context.Background(), "Do-Something", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "transport failed")
+		assert.Contains(t, err.Error(), "remote stderr")
+	})
+
+	t.Run("nonzero exit includes stderr", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		fakeClient := &fakeWinRMClient{stderr: "script failed", code: 1}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		err := backend.runPS(context.Background(), "Do-Something", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exit code 1")
+		assert.Contains(t, err.Error(), "script failed")
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		fakeClient := &fakeWinRMClient{stdout: "not json"}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		var out map[string]any
+		err := backend.runPS(context.Background(), "Do-Something", &out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "json unmarshal failed")
+		assert.Contains(t, err.Error(), "not json")
+	})
+
+	t.Run("empty stdout when output expected", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		fakeClient := &fakeWinRMClient{stderr: "nothing returned"}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		var out map[string]any
+		err := backend.runPS(context.Background(), "Do-Something", &out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "expected JSON output")
+		assert.Contains(t, err.Error(), "nothing returned")
+	})
+
+	t.Run("context canceled while command is running", func(t *testing.T) {
+		backend := NewWinRMBackend("10.0.0.1", 5985, false, true, "admin", "pass", 0)
+		started := make(chan struct{})
+		release := make(chan struct{})
+		fakeClient := &fakeWinRMClient{started: started, release: release}
+		originalNewClient := newWinRMClientWithParameters
+		newWinRMClientWithParameters = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+			return fakeClient, nil
+		}
+		t.Cleanup(func() { newWinRMClientWithParameters = originalNewClient })
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- backend.runPS(ctx, "Do-Something", nil)
+		}()
+		<-started
+		cancel()
+		err := <-errCh
+		close(release)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "context canceled")
+	})
 }
 
 func newUnitWinRMBackend() *WinRMBackend {
@@ -769,6 +937,19 @@ func TestWinRMBackend_CreateSnapshot(t *testing.T) {
 	}
 }
 
+func TestWinRMBackend_CreateSnapshot_FileShareDirectoryRejected(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		t.Fatalf("directory-backed file-share CreateSnapshot should not run PowerShell; script: %s", script)
+		return nil
+	}
+
+	snap, err := backend.CreateSnapshot(context.Background(), "D:\\shares\\csi-nfs-test", "fileshare snap")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "directory-backed file-share snapshots are not supported")
+	assert.Empty(t, snap.SnapshotID)
+}
+
 // ---------------------------------------------------------------------------
 // DeleteSnapshot tests
 // ---------------------------------------------------------------------------
@@ -810,6 +991,25 @@ func TestWinRMBackend_DeleteSnapshot(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWinRMBackend_DeleteSnapshot_FileShareVSSHandle(t *testing.T) {
+	snapshotID, err := encodeFileShareSnapshotHandle(fileShareSnapshotHandle{
+		SnapshotType: "vss",
+		ShadowID:     "{22222222-2222-2222-2222-222222222222}",
+		OriginalPath: "D:\\shares\\csi-nfs-test",
+	})
+	require.NoError(t, err)
+
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		assert.Contains(t, script, "Remove-CsiShadowCopy")
+		assert.Contains(t, script, "{22222222-2222-2222-2222-222222222222}")
+		assert.NotContains(t, script, "Get-IscsiVirtualDiskSnapshot")
+		return nil
+	}
+
+	require.NoError(t, backend.DeleteSnapshot(context.Background(), snapshotID))
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +1075,18 @@ func TestWinRMBackend_ListSnapshots(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWinRMBackend_ListSnapshots_FileShareReturnsEmpty(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		t.Fatalf("file-share ListSnapshots should not call PowerShell; script: %s", script)
+		return nil
+	}
+
+	snaps, err := backend.ListSnapshots(context.Background(), "D:\\shares\\csi-nfs-test")
+	require.NoError(t, err)
+	assert.Empty(t, snaps)
 }
 
 // ---------------------------------------------------------------------------

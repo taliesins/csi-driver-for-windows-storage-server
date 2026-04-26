@@ -1,0 +1,18 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: smb-vhdx-for-windows-rwx
+provisioner: smb-vhdx.csi.windows.microsoft.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  shareBackend: "vhdx"
+  shareParentPath: "E:\\SmbVhdxShares"
+  vhdxParentPath: "E:\\SmbShareVhdx"
+  smbServer: "win-storage.lab.local"
+  smbChangeAccess: "EXAMPLE\\storage-user"
+  smbEncryptData: "true"
+
+  csi.storage.k8s.io/node-stage-secret-name: "smb-vhdx-credentials"
+  csi.storage.k8s.io/node-stage-secret-namespace: "${pvc.namespace}"

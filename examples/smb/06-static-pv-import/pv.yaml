@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: preprovisioned-smb
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: smb-for-windows-rwx
+  csi:
+    driver: smb.csi.windows.microsoft.com
+    volumeHandle: "smb://win-storage.lab.local/preprovisioned-smb?name=preprovisioned-smb&shareBackend=directory&sharePath=E%3A%5CSmbShares%5Cpreprovisioned-smb&vhdxPath=E%3A%5CSmbShares%5Cpreprovisioned-smb&capacityBytes=107374182400"
+    volumeAttributes: {}

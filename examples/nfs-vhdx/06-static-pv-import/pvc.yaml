@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: preprovisioned-nfs-vhdx-claim
+  namespace: apps
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-vhdx-for-windows-rwx
+  volumeName: preprovisioned-nfs-vhdx
+  resources:
+    requests:
+      storage: 100Gi

@@ -1,0 +1,16 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-vhdx-for-windows-rwx
+provisioner: nfs-vhdx.csi.windows.microsoft.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  shareBackend: "vhdx"
+  shareParentPath: "E:\\NfsVhdxShares"
+  vhdxParentPath: "E:\\NfsShareVhdx"
+  nfsServer: "win-storage.lab.local"
+  nfsClientName: "*"
+  nfsPermission: "readwrite"
+  nfsAllowRootAccess: "true"

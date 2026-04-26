@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nfs-vhdx-writer-a
+  namespace: apps
+  labels:
+    app: nfs-vhdx-rwx-demo
+spec:
+  nodeSelector:
+    kubernetes.io/os: linux
+  containers:
+    - name: app
+      image: ubuntu:24.04
+      command: ["bash", "-lc", "while true; do date >> /data/writer-a.log; sleep 30; done"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: shared-nfs-vhdx-data

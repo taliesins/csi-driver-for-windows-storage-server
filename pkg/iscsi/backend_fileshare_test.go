@@ -133,6 +133,73 @@ func TestWinRMBackend_DeleteNfsShare(t *testing.T) {
 	require.NoError(t, backend.DeleteNfsShare(context.Background(), "csi-nfs-test", "D:\\shares\\csi-nfs-test"))
 }
 
+func TestWinRMBackend_GetNfsShare(t *testing.T) {
+	tests := []struct {
+		name  string
+		psOut struct {
+			Exists        bool   `json:"exists"`
+			Name          string `json:"name"`
+			NfsServer     string `json:"nfsServer"`
+			NfsExportPath string `json:"nfsExportPath"`
+			VHDXPath      string `json:"vhdxPath"`
+			SizeBytes     int64  `json:"sizeBytes"`
+			CapacityBytes int64  `json:"capacityBytes"`
+		}
+		wantExists bool
+	}{
+		{
+			name: "existing share",
+			psOut: struct {
+				Exists        bool   `json:"exists"`
+				Name          string `json:"name"`
+				NfsServer     string `json:"nfsServer"`
+				NfsExportPath string `json:"nfsExportPath"`
+				VHDXPath      string `json:"vhdxPath"`
+				SizeBytes     int64  `json:"sizeBytes"`
+				CapacityBytes int64  `json:"capacityBytes"`
+			}{
+				Exists:        true,
+				Name:          "csi-nfs-test",
+				NfsServer:     "server01",
+				NfsExportPath: "/csi-nfs-test",
+				VHDXPath:      "D:\\shares\\csi-nfs-test",
+				CapacityBytes: 4096,
+			},
+			wantExists: true,
+		},
+		{name: "missing share"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := newUnitWinRMBackend()
+			backend.psRunner = func(ctx context.Context, script string, out any) error {
+				assert.Contains(t, script, "Import-Module NFS")
+				assert.Contains(t, script, "Get-NfsShare")
+				assert.Contains(t, script, ".csi-volume.json")
+				assert.Contains(t, script, "csi-nfs-test")
+				assert.Contains(t, script, "D:\\shares")
+				copyTestOutput(out, tt.psOut)
+				return nil
+			}
+
+			exists, info, err := backend.GetNfsShare(context.Background(), "csi-nfs-test", "D:\\shares")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantExists, exists)
+			if tt.wantExists {
+				assert.Equal(t, ProtocolNFS, info.Protocol)
+				assert.Equal(t, "server01", info.NfsServer)
+				assert.Equal(t, "/csi-nfs-test", info.NfsExportPath)
+				assert.Equal(t, "D:\\shares\\csi-nfs-test", info.VHDXPath)
+				assert.Equal(t, info.VHDXPath, info.SharePath)
+				assert.Equal(t, int64(4096), info.CapacityBytes)
+			} else {
+				assert.Empty(t, info)
+			}
+		})
+	}
+}
+
 func TestWinRMBackend_CreateSmbShare(t *testing.T) {
 	backend := newUnitWinRMBackend()
 	calls := 0
@@ -240,6 +307,98 @@ func TestWinRMBackend_DeleteSmbShare(t *testing.T) {
 	require.NoError(t, backend.DeleteSmbShare(context.Background(), "csi-smb-test", "D:\\shares\\csi-smb-test"))
 }
 
+func TestWinRMBackend_GetSmbShare(t *testing.T) {
+	tests := []struct {
+		name  string
+		psOut struct {
+			Exists        bool   `json:"exists"`
+			Name          string `json:"name"`
+			SmbServer     string `json:"smbServer"`
+			SmbShareName  string `json:"smbShareName"`
+			VHDXPath      string `json:"vhdxPath"`
+			SizeBytes     int64  `json:"sizeBytes"`
+			CapacityBytes int64  `json:"capacityBytes"`
+		}
+		wantExists bool
+	}{
+		{
+			name: "existing share",
+			psOut: struct {
+				Exists        bool   `json:"exists"`
+				Name          string `json:"name"`
+				SmbServer     string `json:"smbServer"`
+				SmbShareName  string `json:"smbShareName"`
+				VHDXPath      string `json:"vhdxPath"`
+				SizeBytes     int64  `json:"sizeBytes"`
+				CapacityBytes int64  `json:"capacityBytes"`
+			}{
+				Exists:        true,
+				Name:          "csi-smb-test",
+				SmbServer:     "server01",
+				SmbShareName:  "csi-smb-test",
+				VHDXPath:      "D:\\shares\\csi-smb-test",
+				CapacityBytes: 8192,
+			},
+			wantExists: true,
+		},
+		{name: "missing share"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := newUnitWinRMBackend()
+			backend.psRunner = func(ctx context.Context, script string, out any) error {
+				assert.Contains(t, script, "Import-Module SmbShare")
+				assert.Contains(t, script, "Get-SmbShare")
+				assert.Contains(t, script, ".csi-volume.json")
+				assert.Contains(t, script, "csi-smb-test")
+				copyTestOutput(out, tt.psOut)
+				return nil
+			}
+
+			exists, info, err := backend.GetSmbShare(context.Background(), "csi-smb-test", "D:\\shares")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantExists, exists)
+			if tt.wantExists {
+				assert.Equal(t, ProtocolSMB, info.Protocol)
+				assert.Equal(t, "server01", info.SmbServer)
+				assert.Equal(t, "csi-smb-test", info.SmbShareName)
+				assert.Equal(t, "D:\\shares\\csi-smb-test", info.VHDXPath)
+				assert.Equal(t, info.VHDXPath, info.SharePath)
+				assert.Equal(t, int64(8192), info.CapacityBytes)
+			} else {
+				assert.Empty(t, info)
+			}
+		})
+	}
+}
+
+func TestWinRMBackend_MountFileShareVirtualDisk(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		assert.Contains(t, script, "Mount-CsiFileShareVirtualDisk")
+		assert.Contains(t, script, "Get-CsiPartitionByAccessPath")
+		assert.Contains(t, script, "D:\\vhdx\\share.vhdx")
+		assert.Contains(t, script, "D:\\shares\\share")
+		return nil
+	}
+
+	require.NoError(t, backend.MountFileShareVirtualDisk(context.Background(), "D:\\vhdx\\share.vhdx", "D:\\shares\\share"))
+}
+
+func TestWinRMBackend_UnmountFileShareVirtualDisk(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		assert.Contains(t, script, "Dismount-CsiFileShareVirtualDisk")
+		assert.Contains(t, script, "Remove-PartitionAccessPath")
+		assert.Contains(t, script, "D:\\vhdx\\share.vhdx")
+		assert.Contains(t, script, "D:\\shares\\share")
+		return nil
+	}
+
+	require.NoError(t, backend.UnmountFileShareVirtualDisk(context.Background(), "D:\\vhdx\\share.vhdx", "D:\\shares\\share"))
+}
+
 func TestWinRMBackend_ResizeFileShare(t *testing.T) {
 	backend := newUnitWinRMBackend()
 	backend.psRunner = func(ctx context.Context, script string, out any) error {
@@ -258,13 +417,70 @@ func TestWinRMBackend_ResizeFileShare(t *testing.T) {
 }
 
 func TestWinRMBackend_RestoreSnapshotAsFileShare(t *testing.T) {
+	snapshotID, err := encodeFileShareSnapshotHandle(fileShareSnapshotHandle{
+		SnapshotType:       "vss",
+		ShadowID:           "{33333333-3333-3333-3333-333333333333}",
+		ShadowDeviceObject: "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3",
+		ShadowPath:         "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3\\shares\\snap-001",
+		SourceRelativePath: "shares\\snap-001",
+		OriginalPath:       "D:\\shares\\snap-001",
+	})
+	require.NoError(t, err)
+
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		assert.Contains(t, script, "Copy-CsiDirectoryTree")
+		assert.Contains(t, script, "Get-CsiShadowCopy")
+		assert.Contains(t, script, "{33333333-3333-3333-3333-333333333333}")
+		assert.Contains(t, script, "shares\\snap-001")
+		assert.Contains(t, script, "D:\\shares\\restore-target")
+		assert.NotContains(t, script, "Copy-CsiDirectoryMirror")
+		assert.NotContains(t, script, "ConvertFrom-Json")
+		return nil
+	}
+
+	require.NoError(t, backend.RestoreSnapshotAsFileShare(context.Background(), snapshotID, "D:\\shares\\restore-target"))
+}
+
+func TestWinRMBackend_RestoreSnapshotAsFileShareLegacyMetadata(t *testing.T) {
 	backend := newUnitWinRMBackend()
 	backend.psRunner = func(ctx context.Context, script string, out any) error {
 		assert.Contains(t, script, "Copy-CsiDirectoryMirror")
+		assert.Contains(t, script, "ConvertFrom-Json")
 		assert.Contains(t, script, "D:\\shares\\.csi-snapshots\\snap-001")
 		assert.Contains(t, script, "D:\\shares\\restore-target")
 		return nil
 	}
 
 	require.NoError(t, backend.RestoreSnapshotAsFileShare(context.Background(), "D:\\shares\\.csi-snapshots\\snap-001", "D:\\shares\\restore-target"))
+}
+
+func TestWinRMBackend_RestoreSnapshotAsFileShareInvalidHandle(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		t.Fatalf("invalid encoded file-share handle should not run PowerShell")
+		return nil
+	}
+
+	err := backend.RestoreSnapshotAsFileShare(context.Background(), fileShareSnapshotIDPrefix+"not-base64", "D:\\shares\\restore-target")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid file-share snapshot handle")
+}
+
+func TestWinRMBackend_RestoreSnapshotAsFileSharePropagatesPowerShellError(t *testing.T) {
+	snapshotID, err := encodeFileShareSnapshotHandle(fileShareSnapshotHandle{
+		SnapshotType: "vss",
+		ShadowID:     "{44444444-4444-4444-4444-444444444444}",
+		ShadowPath:   "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy4\\shares\\snap-001",
+	})
+	require.NoError(t, err)
+
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		return errors.New("restore failed")
+	}
+
+	err = backend.RestoreSnapshotAsFileShare(context.Background(), snapshotID, "D:\\shares\\restore-target")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "restore failed")
 }

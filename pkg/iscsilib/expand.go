@@ -16,6 +16,8 @@ type Resizer interface {
 	Resize(devicePath, mountPoint string) (bool, error)
 }
 
+var getDeviceNameFromMount = mount.GetDeviceNameFromMount
+
 // ExpandVolume rescans iSCSI sessions (using iscsiCmd), resizes multipath (if present),
 // and grows the filesystem mounted at volumePath (if not a raw block).
 func ExpandVolume(mounter mount.Interface, resizer Resizer, volumePath string) error {
@@ -34,7 +36,7 @@ func ExpandVolume(mounter mount.Interface, resizer Resizer, volumePath string) e
 	}
 
 	// 3) Resolve device backing the mount.
-	dev, _, err := mount.GetDeviceNameFromMount(mounter, volumePath)
+	dev, _, err := getDeviceNameFromMount(mounter, volumePath)
 	if err != nil || dev == "" {
 		return fmt.Errorf("cannot resolve device from mount %q: %v", volumePath, err)
 	}

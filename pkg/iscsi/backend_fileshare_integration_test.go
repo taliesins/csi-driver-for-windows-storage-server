@@ -45,7 +45,7 @@ func TestWinRMBackendIntegration_NfsShareLifecycle(t *testing.T) {
 	assert.True(t, exists)
 	assert.Equal(t, name, got.VolumeName)
 
-	exerciseFileShareDataServices(t, backend, ctx, info.VHDXPath, integrationInitialDiskSizeBytes*2)
+	exerciseDirectoryBackedFileShare(t, backend, ctx, info.VHDXPath, integrationInitialDiskSizeBytes*2)
 }
 
 func TestWinRMBackendIntegration_SmbShareLifecycle(t *testing.T) {
@@ -80,10 +80,10 @@ func TestWinRMBackendIntegration_SmbShareLifecycle(t *testing.T) {
 	assert.True(t, exists)
 	assert.Equal(t, name, got.VolumeName)
 
-	exerciseFileShareDataServices(t, backend, ctx, info.VHDXPath, integrationInitialDiskSizeBytes*2)
+	exerciseDirectoryBackedFileShare(t, backend, ctx, info.VHDXPath, integrationInitialDiskSizeBytes*2)
 }
 
-func exerciseFileShareDataServices(t *testing.T, backend *WinRMBackend, ctx context.Context, path string, resizedBytes int64) {
+func exerciseDirectoryBackedFileShare(t *testing.T, backend *WinRMBackend, ctx context.Context, path string, resizedBytes int64) {
 	t.Helper()
 
 	actual, err := backend.ResizeFileShare(ctx, path, resizedBytes)
@@ -97,40 +97,7 @@ Set-Content -LiteralPath (Join-Path -Path '%s' -ChildPath 'payload.txt') -Value 
 @{ ok=$true }
 `, escapePS(path), escapePS(path)), &out))
 
-	snap, err := backend.CreateSnapshot(ctx, path, integrationResourceName("fileshare-snap"))
-	require.NoError(t, err)
-	assert.Equal(t, path, snap.OriginalPath)
-	require.NotEmpty(t, snap.SnapshotID)
-
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), backend.Timeout+15*time.Second)
-		defer cancel()
-		if err := backend.DeleteSnapshot(cleanupCtx, snap.SnapshotID); err != nil {
-			t.Logf("cleanup file-share snapshot %q: %v", snap.SnapshotID, err)
-		}
-	})
-
 	snaps, err := backend.ListSnapshots(ctx, path)
 	require.NoError(t, err)
-	assert.NotEmpty(t, snaps)
-
-	restorePath := path + "-restore"
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), backend.Timeout+15*time.Second)
-		defer cancel()
-		var cleanupOut map[string]any
-		if err := backend.runPS(cleanupCtx, fmt.Sprintf(`
-if (Test-Path -LiteralPath '%s') { Remove-Item -LiteralPath '%s' -Recurse -Force -ErrorAction SilentlyContinue }
-@{ ok=$true }
-`, escapePS(restorePath), escapePS(restorePath)), &cleanupOut); err != nil {
-			t.Logf("cleanup restored file share path %q: %v", restorePath, err)
-		}
-	})
-
-	require.NoError(t, backend.RestoreSnapshotAsFileShare(ctx, snap.SnapshotID, restorePath))
-	require.NoError(t, backend.runPS(ctx, fmt.Sprintf(`
-$exists = Test-Path -LiteralPath (Join-Path -Path '%s' -ChildPath 'payload.txt')
-@{ exists=$exists }
-`, escapePS(restorePath)), &out))
-	assert.Equal(t, true, out["exists"])
+	assert.Empty(t, snaps)
 }

@@ -1,6 +1,8 @@
 package iscsi
 
 import (
+	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,14 +33,16 @@ func TestNewDriver(t *testing.T) {
 
 func TestNewProtocolDriver(t *testing.T) {
 	tests := []struct {
-		name       string
-		protocol   Protocol
-		wantDriver string
-		wantCaps   int
+		name               string
+		protocol           Protocol
+		wantDriver         string
+		wantCaps           int
+		wantControllerCaps int
+		wantListSnapshots  bool
 	}{
-		{name: "iscsi", protocol: ProtocolISCSI, wantDriver: "iscsi.csi.windows.microsoft.com", wantCaps: 3},
-		{name: "nfs", protocol: ProtocolNFS, wantDriver: "nfs.csi.windows.microsoft.com", wantCaps: 6},
-		{name: "smb", protocol: ProtocolSMB, wantDriver: "smb.csi.windows.microsoft.com", wantCaps: 6},
+		{name: "iscsi", protocol: ProtocolISCSI, wantDriver: "iscsi.csi.windows.microsoft.com", wantCaps: 3, wantControllerCaps: 7, wantListSnapshots: true},
+		{name: "nfs", protocol: ProtocolNFS, wantDriver: "nfs.csi.windows.microsoft.com", wantCaps: 6, wantControllerCaps: 5, wantListSnapshots: false},
+		{name: "smb", protocol: ProtocolSMB, wantDriver: "smb.csi.windows.microsoft.com", wantCaps: 6, wantControllerCaps: 5, wantListSnapshots: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -45,14 +50,103 @@ func TestNewProtocolDriver(t *testing.T) {
 			assert.Equal(t, tt.wantDriver, d.name)
 			assert.Equal(t, tt.protocol, d.protocol)
 			assert.Len(t, d.cap, tt.wantCaps)
+			assert.Len(t, d.cscap, tt.wantControllerCaps)
+			assert.Equal(t, tt.wantListSnapshots, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS))
 		})
 	}
+}
+
+func TestNewProtocolDriver_UnknownDefaultsToISCSI(t *testing.T) {
+	d := NewProtocolDriver(Protocol("bad-protocol"), "node-001", "unix:///var/run/csi/csi.sock")
+
+	assert.Equal(t, driverName, d.name)
+	assert.Equal(t, ProtocolISCSI, d.protocol)
+	assert.Equal(t, "", d.fileShareBackend)
+}
+
+func driverHasControllerCapability(d *driver, capType csi.ControllerServiceCapability_RPC_Type) bool {
+	for _, cap := range d.cscap {
+		if cap.GetRpc().GetType() == capType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNewNamedDriver(t *testing.T) {
 	d := NewNamedDriver("nfs.csi.windows.microsoft.com", "node-001", "unix:///var/run/csi/csi.sock")
 	assert.Equal(t, "nfs.csi.windows.microsoft.com", d.name)
 	assert.Equal(t, ProtocolNFS, d.protocol)
+	assert.Equal(t, fileShareBackendDirectory, d.fileShareBackend)
+	assert.False(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT))
+	assert.False(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS))
+}
+
+func TestNewNamedDriver_VHDXBackedFileShares(t *testing.T) {
+	tests := []struct {
+		name       string
+		driverName string
+		protocol   Protocol
+	}{
+		{name: "nfs", driverName: nfsVHDXDriverName, protocol: ProtocolNFS},
+		{name: "smb", driverName: smbVHDXDriverName, protocol: ProtocolSMB},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewNamedDriver(tt.driverName, "node-001", "unix:///var/run/csi/csi.sock")
+			assert.Equal(t, tt.driverName, d.name)
+			assert.Equal(t, tt.protocol, d.protocol)
+			assert.Equal(t, fileShareBackendVHDX, d.fileShareBackend)
+			assert.Len(t, d.cap, 6)
+			assert.Len(t, d.cscap, 7)
+			assert.True(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT))
+			assert.True(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS))
+		})
+	}
+}
+
+func TestNewNamedDriver_UnknownDefaultsToISCSI(t *testing.T) {
+	d := NewNamedDriver("unknown.csi.windows.microsoft.com", "node-001", "unix:///var/run/csi/csi.sock")
+
+	assert.Equal(t, "unknown.csi.windows.microsoft.com", d.name)
+	assert.Equal(t, ProtocolISCSI, d.protocol)
+	assert.Equal(t, "", d.fileShareBackend)
+}
+
+func TestDriverNameAndConfigHelpers(t *testing.T) {
+	tests := []struct {
+		name             string
+		driverName       string
+		wantProtocol     Protocol
+		wantShareBackend string
+	}{
+		{name: "iscsi", driverName: driverName, wantProtocol: ProtocolISCSI},
+		{name: "nfs directory", driverName: nfsDriverName, wantProtocol: ProtocolNFS, wantShareBackend: fileShareBackendDirectory},
+		{name: "smb directory", driverName: smbDriverName, wantProtocol: ProtocolSMB, wantShareBackend: fileShareBackendDirectory},
+		{name: "nfs vhdx", driverName: nfsVHDXDriverName, wantProtocol: ProtocolNFS, wantShareBackend: fileShareBackendVHDX},
+		{name: "smb vhdx", driverName: smbVHDXDriverName, wantProtocol: ProtocolSMB, wantShareBackend: fileShareBackendVHDX},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol, backend, err := driverConfigForName(tt.driverName)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProtocol, protocol)
+			assert.Equal(t, tt.wantShareBackend, backend)
+
+			gotProtocol, err := protocolForDriverName(tt.driverName)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProtocol, gotProtocol)
+		})
+	}
+
+	_, _, err := driverConfigForName("bad-driver")
+	assert.Error(t, err)
+
+	_, err = protocolForDriverName("bad-driver")
+	assert.Error(t, err)
+
+	_, err = driverNameForProtocol(Protocol("bad-protocol"))
+	assert.Error(t, err)
 }
 
 func TestNewNodeServer(t *testing.T) {
@@ -93,6 +187,255 @@ func TestAddControllerServiceCapabilities(t *testing.T) {
 	})
 
 	assert.Len(t, d.cscap, 2)
+}
+
+func TestGetenvDefault(t *testing.T) {
+	t.Setenv("CSI_TEST_ENV", "")
+	assert.Equal(t, "fallback", getenvDefault("CSI_TEST_ENV", "fallback"))
+
+	t.Setenv("CSI_TEST_ENV", " value ")
+	assert.Equal(t, "value", getenvDefault("CSI_TEST_ENV", "fallback"))
+}
+
+func TestParseBoolDefault(t *testing.T) {
+	tests := []struct {
+		input string
+		def   bool
+		want  bool
+	}{
+		{input: "", def: true, want: true},
+		{input: "true", want: true},
+		{input: "YES", want: true},
+		{input: "on", want: true},
+		{input: "1", want: true},
+		{input: "false", def: true, want: false},
+		{input: "NO", def: true, want: false},
+		{input: "off", def: true, want: false},
+		{input: "0", def: true, want: false},
+		{input: "not-bool", def: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, parseBoolDefault(tt.input, tt.def))
+		})
+	}
+}
+
+func clearWinRMEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"WINRM_HOST",
+		"WINRM_PORT",
+		"WINRM_TLS",
+		"WINRM_INSECURE",
+		"WINRM_USER",
+		"WINRM_PASSWORD",
+		"WINRM_TIMEOUT",
+		"WINRM_AUTH",
+		"WINRM_PS_IMPORT",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func TestNewWinRMBackendFromEnv(t *testing.T) {
+	clearWinRMEnv(t)
+	t.Setenv("WINRM_HOST", "storage.example.test")
+	t.Setenv("WINRM_TLS", "true")
+	t.Setenv("WINRM_INSECURE", "false")
+	t.Setenv("WINRM_USER", "admin")
+	t.Setenv("WINRM_PASSWORD", "secret")
+	t.Setenv("WINRM_TIMEOUT", "45s")
+	t.Setenv("WINRM_AUTH", "ntlm")
+	t.Setenv("WINRM_PS_IMPORT", "Import-Module Custom")
+
+	backend, err := newWinRMBackendFromEnv()
+	require.NoError(t, err)
+
+	winrmBackend, ok := backend.(*WinRMBackend)
+	require.True(t, ok)
+	assert.Equal(t, "storage.example.test", winrmBackend.Endpoint.Host)
+	assert.Equal(t, 5986, winrmBackend.Endpoint.Port)
+	assert.True(t, winrmBackend.Endpoint.HTTPS)
+	assert.False(t, winrmBackend.Endpoint.Insecure)
+	assert.Equal(t, 45*time.Second, winrmBackend.Timeout)
+	assert.Equal(t, "ntlm", winrmBackend.Auth)
+	assert.Equal(t, "Import-Module Custom", winrmBackend.PSModuleImport)
+}
+
+func TestNewWinRMBackendFromEnv_CustomPortAndErrors(t *testing.T) {
+	t.Run("missing host", func(t *testing.T) {
+		clearWinRMEnv(t)
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "WINRM_HOST")
+	})
+
+	t.Run("bad port", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_PORT", "bad")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid WINRM_PORT")
+	})
+
+	t.Run("missing credentials", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "WINRM_USER and WINRM_PASSWORD")
+	})
+
+	t.Run("custom port", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_PORT", "55985")
+		t.Setenv("WINRM_USER", "admin")
+		t.Setenv("WINRM_PASSWORD", "secret")
+		backend, err := newWinRMBackendFromEnv()
+		require.NoError(t, err)
+		winrmBackend := backend.(*WinRMBackend)
+		assert.Equal(t, 55985, winrmBackend.Endpoint.Port)
+		assert.False(t, winrmBackend.Endpoint.HTTPS)
+	})
+}
+
+func TestIdentityServer(t *testing.T) {
+	d := NewDriver("node-001", "unix:///var/run/csi/csi.sock")
+	ids := NewDefaultIdentityServer(d)
+	require.Equal(t, d, ids.Driver)
+
+	info, err := ids.GetPluginInfo(context.Background(), &csi.GetPluginInfoRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, d.name, info.Name)
+	assert.Equal(t, d.version, info.VendorVersion)
+
+	probe, err := ids.Probe(context.Background(), &csi.ProbeRequest{})
+	require.NoError(t, err)
+	assert.NotNil(t, probe)
+
+	caps, err := ids.GetPluginCapabilities(context.Background(), &csi.GetPluginCapabilitiesRequest{})
+	require.NoError(t, err)
+	require.Len(t, caps.Capabilities, 1)
+	assert.Equal(t, csi.PluginCapability_Service_CONTROLLER_SERVICE, caps.Capabilities[0].GetService().GetType())
+}
+
+func TestIdentityServer_GetPluginInfoErrors(t *testing.T) {
+	ids := &IdentityServer{Driver: &driver{version: "0.1.0"}}
+	_, err := ids.GetPluginInfo(context.Background(), &csi.GetPluginInfoRequest{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Driver name")
+
+	ids = &IdentityServer{Driver: &driver{name: driverName}}
+	_, err = ids.GetPluginInfo(context.Background(), &csi.GetPluginInfoRequest{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "version")
+}
+
+func TestParseEndpoint(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoint  string
+		wantProto string
+		wantAddr  string
+		wantErr   bool
+	}{
+		{name: "unix", endpoint: "unix:///var/run/csi.sock", wantProto: "unix", wantAddr: "/var/run/csi.sock"},
+		{name: "tcp", endpoint: "tcp://127.0.0.1:10000", wantProto: "tcp", wantAddr: "127.0.0.1:10000"},
+		{name: "upper scheme", endpoint: "TCP://127.0.0.1:10000", wantProto: "TCP", wantAddr: "127.0.0.1:10000"},
+		{name: "missing address", endpoint: "unix://", wantErr: true},
+		{name: "bad scheme", endpoint: "npipe://pipe/csi", wantErr: true},
+		{name: "missing scheme", endpoint: "/var/run/csi.sock", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proto, addr, err := ParseEndpoint(tt.endpoint)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProto, proto)
+			assert.Equal(t, tt.wantAddr, addr)
+		})
+	}
+}
+
+func TestLogGRPC(t *testing.T) {
+	info := &grpc.UnaryServerInfo{FullMethod: "/csi.v1.Identity/Probe"}
+	resp, err := logGRPC(context.Background(), "request", info, func(ctx context.Context, req interface{}) (interface{}, error) {
+		assert.Equal(t, "request", req)
+		return "response", nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "response", resp)
+
+	expectedErr := errors.New("handler failed")
+	resp, err = logGRPC(context.Background(), "request", info, func(ctx context.Context, req interface{}) (interface{}, error) {
+		return nil, expectedErr
+	})
+	assert.ErrorIs(t, err, expectedErr)
+	assert.Nil(t, resp)
+}
+
+func TestNewNonBlockingGRPCServer(t *testing.T) {
+	server := NewNonBlockingGRPCServer()
+
+	assert.NotNil(t, server)
+	assert.IsType(t, &nonBlockingGRPCServer{}, server)
+}
+
+type fakeNonBlockingGRPCServer struct {
+	endpoint string
+	ids      csi.IdentityServer
+	cs       csi.ControllerServer
+	ns       csi.NodeServer
+	waited   bool
+}
+
+func (f *fakeNonBlockingGRPCServer) Start(endpoint string, ids csi.IdentityServer, cs csi.ControllerServer, ns csi.NodeServer) {
+	f.endpoint = endpoint
+	f.ids = ids
+	f.cs = cs
+	f.ns = ns
+}
+
+func (f *fakeNonBlockingGRPCServer) Wait() {
+	f.waited = true
+}
+
+func (f *fakeNonBlockingGRPCServer) Stop() {}
+
+func (f *fakeNonBlockingGRPCServer) ForceStop() {}
+
+func TestDriverRunWiresBackendAndServers(t *testing.T) {
+	backend := &mockBackend{}
+	fakeServer := &fakeNonBlockingGRPCServer{}
+
+	originalBackendFromEnv := newBackendFromEnvForRun
+	originalServerFactory := newNonBlockingGRPCServerForRun
+	newBackendFromEnvForRun = func() (Backend, error) {
+		return backend, nil
+	}
+	newNonBlockingGRPCServerForRun = func() NonBlockingGRPCServer {
+		return fakeServer
+	}
+	t.Cleanup(func() {
+		newBackendFromEnvForRun = originalBackendFromEnv
+		newNonBlockingGRPCServerForRun = originalServerFactory
+	})
+
+	d := NewDriver("node-001", "tcp://127.0.0.1:10000")
+	d.Run()
+
+	assert.Same(t, backend, d.backend)
+	assert.Equal(t, "tcp://127.0.0.1:10000", fakeServer.endpoint)
+	assert.True(t, fakeServer.waited)
+	assert.IsType(t, &IdentityServer{}, fakeServer.ids)
+	assert.IsType(t, &ControllerServer{}, fakeServer.cs)
+	assert.IsType(t, &nodeServer{}, fakeServer.ns)
 }
 
 // ---------------------------------------------------------------------------

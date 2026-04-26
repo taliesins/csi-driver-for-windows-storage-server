@@ -1,0 +1,9 @@
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: shared-smb-vhdx-snap-1
+  namespace: apps
+spec:
+  volumeSnapshotClassName: smb-vhdx-for-windows-snapclass
+  source:
+    persistentVolumeClaimName: shared-smb-vhdx-data

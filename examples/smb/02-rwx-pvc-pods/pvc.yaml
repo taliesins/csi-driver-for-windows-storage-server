@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-smb-data
+  namespace: apps
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: smb-for-windows-rwx
+  resources:
+    requests:
+      storage: 100Gi

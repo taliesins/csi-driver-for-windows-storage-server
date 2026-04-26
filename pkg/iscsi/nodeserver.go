@@ -19,7 +19,8 @@ import (
 
 // Mockable function references for testing
 var (
-	iscsilibConnect      = func(c iscsilib.Connector) (string, error) { return iscsilib.Connect(c) }
+	iscsilibConnect      = func(c *iscsilib.Connector) (string, error) { return c.Connect() }
+	getConnectorFromFile = iscsilib.GetConnectorFromFile
 	iscsilibExpandVolume = func(m mount.Interface, resizer iscsilib.Resizer, volumePath string) error {
 		return iscsilib.ExpandVolume(m, resizer, volumePath)
 	}
@@ -404,7 +405,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		RetryCount:       60,
 		CheckInterval:    2,
 	}
-	device, err := iscsilibConnect(*conn)
+	device, err := iscsilibConnect(conn)
 	if err != nil || device == "" {
 		return nil, status.Errorf(codes.Internal, "iSCSI connect failed: %v", err)
 	}
@@ -450,7 +451,7 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 	}
 
 	// Load connector and disconnect volume (multipath-aware)
-	if conn, err := iscsilib.GetConnectorFromFile(stageConnectorFile(req.GetStagingTargetPath())); err == nil {
+	if conn, err := getConnectorFromFile(stageConnectorFile(req.GetStagingTargetPath())); err == nil {
 		_ = conn.DisconnectVolume()
 		_ = os.Remove(stageConnectorFile(req.GetStagingTargetPath()))
 	}
@@ -503,7 +504,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if staging == "" {
 			return nil, status.Error(codes.InvalidArgument, "stagingTargetPath is required for block to load connector")
 		}
-		conn, err := iscsilib.GetConnectorFromFile(stageConnectorFile(staging))
+		conn, err := getConnectorFromFile(stageConnectorFile(staging))
 		if err != nil || conn == nil || conn.MountTargetDevice == nil {
 			// Fallback: compute the by-path and bind mount
 			device := filepath.Join("/dev/disk/by-path",
@@ -545,7 +546,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	// Tolerate reboot recovery: if staging isn't mounted, recover using connector info.
 	notMnt, merr := ns.mounter.IsLikelyNotMountPoint(staging)
 	if merr == nil && notMnt {
-		if conn, err := iscsilib.GetConnectorFromFile(stageConnectorFile(staging)); err == nil && conn != nil {
+		if conn, err := getConnectorFromFile(stageConnectorFile(staging)); err == nil && conn != nil {
 			device := conn.MountTargetDevice.GetPath()
 			if device == "" {
 				device = filepath.Join("/dev/disk/by-path",

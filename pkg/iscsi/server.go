@@ -17,6 +17,8 @@ limitations under the License.
 package iscsi
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -52,7 +54,12 @@ type nonBlockingGRPCServer struct {
 func (s *nonBlockingGRPCServer) Start(endpoint string, ids csi.IdentityServer, cs csi.ControllerServer, ns csi.NodeServer) {
 	s.wg.Add(1)
 
-	go s.serve(endpoint, ids, cs, ns)
+	go func() {
+		defer s.wg.Done()
+		if err := s.serve(endpoint, ids, cs, ns); err != nil {
+			klog.Fatal(err.Error())
+		}
+	}()
 }
 
 func (s *nonBlockingGRPCServer) Wait() {
@@ -60,30 +67,35 @@ func (s *nonBlockingGRPCServer) Wait() {
 }
 
 func (s *nonBlockingGRPCServer) Stop() {
-	s.server.GracefulStop()
+	if s.server != nil {
+		s.server.GracefulStop()
+	}
 }
 
 func (s *nonBlockingGRPCServer) ForceStop() {
-	s.server.Stop()
+	if s.server != nil {
+		s.server.Stop()
+	}
 }
 
-func (s *nonBlockingGRPCServer) serve(endpoint string, ids csi.IdentityServer, cs csi.ControllerServer, ns csi.NodeServer) {
+func (s *nonBlockingGRPCServer) serve(endpoint string, ids csi.IdentityServer, cs csi.ControllerServer, ns csi.NodeServer) error {
 	proto, addr, err := ParseEndpoint(endpoint)
 	if err != nil {
-		klog.Fatal(err.Error())
+		return err
 	}
 
 	if proto == "unix" {
 		addr = "/" + addr
 		if err := os.Remove(addr); err != nil && !os.IsNotExist(err) {
-			klog.Fatalf("failed to remove %s, error: %s", addr, err.Error())
+			return fmt.Errorf("failed to remove %s, error: %w", addr, err)
 		}
 	}
 
 	listener, err := net.Listen(proto, addr)
 	if err != nil {
-		klog.Fatalf("failed to listen: %v", err)
+		return fmt.Errorf("failed to listen: %w", err)
 	}
+	defer func() { _ = listener.Close() }()
 
 	opts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(logGRPC),
@@ -102,7 +114,8 @@ func (s *nonBlockingGRPCServer) serve(endpoint string, ids csi.IdentityServer, c
 	}
 	klog.Infof("listening for connections on address: %#v", listener.Addr())
 	err = server.Serve(listener)
-	if err != nil {
-		klog.Fatalf("failed to serve requests: %v", err)
+	if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		return fmt.Errorf("failed to serve requests: %w", err)
 	}
+	return nil
 }

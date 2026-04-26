@@ -1,0 +1,9 @@
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: shared-nfs-vhdx-snap-1
+  namespace: apps
+spec:
+  volumeSnapshotClassName: nfs-vhdx-for-windows-snapclass
+  source:
+    persistentVolumeClaimName: shared-nfs-vhdx-data

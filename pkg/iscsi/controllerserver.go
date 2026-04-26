@@ -87,6 +87,7 @@ type VolumeInfo struct {
 	TargetIQN     string
 	LUN           any
 	VHDXPath      string
+	SharePath     string
 	NfsServer     string
 	NfsExportPath string
 	SmbServer     string
@@ -210,6 +211,63 @@ func normalizeNfsPermission(value string) (string, error) {
 	default:
 		return "", status.Errorf(codes.InvalidArgument, "parameter nfsPermission must be readonly/ro or readwrite/rw")
 	}
+}
+
+func (cs *ControllerServer) fileShareBackendFromParams(params map[string]string) (string, error) {
+	defaultBackend := fileShareBackendDirectory
+	if cs.Driver != nil && cs.Driver.fileShareBackend != "" {
+		defaultBackend = cs.Driver.fileShareBackend
+	}
+	backend := defaultBackend
+	if raw, ok := getStringParam(params, "shareBackend"); ok {
+		backend = strings.ToLower(raw)
+	}
+	switch backend {
+	case fileShareBackendDirectory, fileShareBackendVHDX:
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "parameter shareBackend must be %q or %q", fileShareBackendDirectory, fileShareBackendVHDX)
+	}
+	if cs.Driver != nil && cs.Driver.fileShareBackend != "" && backend != cs.Driver.fileShareBackend {
+		return "", status.Errorf(codes.InvalidArgument, "driver %s only supports shareBackend=%s", cs.Driver.name, cs.Driver.fileShareBackend)
+	}
+	return backend, nil
+}
+
+func fileShareVolumeID(name string, protocol Protocol, backend string, info VolumeInfo, capacityBytes int64) *VolumeID {
+	vid := &VolumeID{
+		Name:          name,
+		Protocol:      protocol,
+		ShareBackend:  backend,
+		CapacityBytes: capacityBytes,
+	}
+	switch protocol {
+	case ProtocolNFS:
+		vid.NfsServer = info.NfsServer
+		vid.NfsExportPath = info.NfsExportPath
+	case ProtocolSMB:
+		vid.SmbServer = info.SmbServer
+		vid.SmbShareName = info.SmbShareName
+	}
+	if backend == fileShareBackendVHDX {
+		vid.VHDXPath = info.VHDXPath
+		vid.SharePath = info.SharePath
+	} else {
+		vid.VHDXPath = info.VHDXPath
+		vid.SharePath = info.VHDXPath
+	}
+	return vid
+}
+
+func joinWindowsPath(parent, child string) string {
+	parent = strings.TrimRight(strings.TrimSpace(parent), `\/`)
+	child = strings.TrimLeft(strings.TrimSpace(child), `\/`)
+	if parent == "" {
+		return child
+	}
+	if child == "" {
+		return parent
+	}
+	return parent + `\` + child
 }
 
 func nfsOptionsFromParams(params map[string]string) (NfsShareOptions, error) {
@@ -544,6 +602,10 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "parameter shareParentPath is required")
 	}
+	shareBackend, err := cs.fileShareBackendFromParams(params)
+	if err != nil {
+		return nil, err
+	}
 	nfsServer, _ := getStringParam(params, "nfsServer")
 	nfsOpts, err := nfsOptionsFromParams(params)
 	if err != nil {
@@ -554,6 +616,12 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 		return nil, err
 	}
 	name := req.GetName()
+	if shareBackend == fileShareBackendVHDX {
+		return cs.createVHDXBackedNfsVolume(ctx, req, name, parentDir, nfsServer, size, nfsOpts)
+	}
+	if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
+		return nil, status.Error(codes.InvalidArgument, "directory-backed NFS volumes do not support restore from snapshots")
+	}
 	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, parentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetNfsShare: %v", err)
@@ -563,34 +631,94 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "CreateNfsShare: %v", err)
 		}
+	}
+	if nfsServer != "" {
+		info.NfsServer = nfsServer
+	}
+	capacityBytes := maxInt64(info.CapacityBytes, size)
+	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolNFS, shareBackend, info, capacityBytes))
+	return &csi.CreateVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:      vid,
+			CapacityBytes: capacityBytes,
+			VolumeContext: volumeContextForVolumeID(&VolumeID{
+				Protocol:      ProtocolNFS,
+				NfsServer:     info.NfsServer,
+				NfsExportPath: info.NfsExportPath,
+			}),
+			ContentSource: req.GetVolumeContentSource(),
+		},
+	}, nil
+}
+
+func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, nfsServer string, size int64, nfsOpts NfsShareOptions) (*csi.CreateVolumeResponse, error) {
+	params := req.GetParameters()
+	vhdxParentDir, ok := getStringParam(params, "vhdxParentPath")
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "parameter vhdxParentPath is required when shareBackend=vhdx")
+	}
+	sharePath := joinWindowsPath(shareParentDir, name)
+	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, shareParentDir)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "GetNfsShare: %v", err)
+	}
+	_, existingVHDXPath, existingSize, _, _, err := cs.Driver.backend.GetVolumeByName(ctx, name, vhdxParentDir)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "GetVolumeByName: %v", err)
+	}
+	if !exists {
+		vhdxPath := existingVHDXPath
+		actual := existingSize
 		if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
 			sid, err := decodeSnapID(src.GetSnapshot().GetSnapshotId())
 			if err != nil {
 				return nil, status.Errorf(codes.InvalidArgument, "invalid snapshotId: %v", err)
 			}
-			if info.VHDXPath == "" {
-				return nil, status.Error(codes.Internal, "CreateNfsShare did not return a backing path")
+			vhdxPath, err = cs.Driver.backend.ExportSnapshotAsVirtualDisk(ctx, sid.SnapshotID)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "ExportSnapshotAsVirtualDisk: %v", err)
 			}
-			if err := cs.Driver.backend.RestoreSnapshotAsFileShare(ctx, sid.SnapshotID, info.VHDXPath); err != nil {
-				return nil, status.Errorf(codes.Internal, "RestoreSnapshotAsFileShare: %v", err)
+			if vi, err := cs.Driver.backend.GetVolumeInfo(ctx, vhdxPath); err == nil {
+				actual = vi.SizeBytes
+			}
+		} else if vhdxPath == "" {
+			vhdxPath, actual, err = cs.Driver.backend.CreateVirtualDisk(ctx, name, vhdxParentDir, size)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "CreateVirtualDisk: %v", err)
 			}
 		}
+		if err := cs.Driver.backend.MountFileShareVirtualDisk(ctx, vhdxPath, sharePath); err != nil {
+			return nil, status.Errorf(codes.Internal, "MountFileShareVirtualDisk: %v", err)
+		}
+		info, err = cs.Driver.backend.CreateNfsShare(ctx, name, shareParentDir, maxInt64(size, actual), splitCSVParam(params["nfsClientName"]), nfsOpts)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "CreateNfsShare: %v", err)
+		}
+		info.VHDXPath = vhdxPath
+		info.SharePath = sharePath
+		info.SizeBytes = actual
+		info.CapacityBytes = maxInt64(info.CapacityBytes, actual)
+	} else {
+		info.SharePath = firstNonEmpty(info.SharePath, info.VHDXPath, sharePath)
+		if existingVHDXPath == "" {
+			return nil, status.Errorf(codes.FailedPrecondition, "NFS share %q exists but VHDX %q was not found", name, joinWindowsPath(vhdxParentDir, name+".vhdx"))
+		}
+		if err := cs.Driver.backend.MountFileShareVirtualDisk(ctx, existingVHDXPath, info.SharePath); err != nil {
+			return nil, status.Errorf(codes.Internal, "MountFileShareVirtualDisk(existing): %v", err)
+		}
+		info.VHDXPath = existingVHDXPath
+		info.SizeBytes = existingSize
+		info.CapacityBytes = maxInt64(info.CapacityBytes, existingSize)
 	}
 	if nfsServer != "" {
 		info.NfsServer = nfsServer
 	}
-	vid := EncodeVolumeID(&VolumeID{
-		Name:          name,
-		Protocol:      ProtocolNFS,
-		NfsServer:     info.NfsServer,
-		NfsExportPath: info.NfsExportPath,
-		VHDXPath:      info.VHDXPath,
-		CapacityBytes: maxInt64(info.CapacityBytes, size),
-	})
+	capacityBytes := maxInt64(info.CapacityBytes, size)
+	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolNFS, fileShareBackendVHDX, info, capacityBytes))
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
-			CapacityBytes: maxInt64(info.CapacityBytes, size),
+			CapacityBytes: capacityBytes,
 			VolumeContext: volumeContextForVolumeID(&VolumeID{
 				Protocol:      ProtocolNFS,
 				NfsServer:     info.NfsServer,
@@ -607,6 +735,10 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "parameter shareParentPath is required")
 	}
+	shareBackend, err := cs.fileShareBackendFromParams(params)
+	if err != nil {
+		return nil, err
+	}
 	smbServer, _ := getStringParam(params, "smbServer")
 	smbOpts, err := smbOptionsFromParams(params)
 	if err != nil {
@@ -617,6 +749,12 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 		return nil, err
 	}
 	name := req.GetName()
+	if shareBackend == fileShareBackendVHDX {
+		return cs.createVHDXBackedSmbVolume(ctx, req, name, parentDir, smbServer, size, smbOpts)
+	}
+	if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
+		return nil, status.Error(codes.InvalidArgument, "directory-backed SMB volumes do not support restore from snapshots")
+	}
 	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, parentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetSmbShare: %v", err)
@@ -630,34 +768,98 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "CreateSmbShare: %v", err)
 		}
+	}
+	if smbServer != "" {
+		info.SmbServer = smbServer
+	}
+	capacityBytes := maxInt64(info.CapacityBytes, size)
+	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolSMB, shareBackend, info, capacityBytes))
+	return &csi.CreateVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:      vid,
+			CapacityBytes: capacityBytes,
+			VolumeContext: volumeContextForVolumeID(&VolumeID{
+				Protocol:     ProtocolSMB,
+				SmbServer:    info.SmbServer,
+				SmbShareName: info.SmbShareName,
+			}),
+			ContentSource: req.GetVolumeContentSource(),
+		},
+	}, nil
+}
+
+func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, smbServer string, size int64, smbOpts SmbShareOptions) (*csi.CreateVolumeResponse, error) {
+	params := req.GetParameters()
+	vhdxParentDir, ok := getStringParam(params, "vhdxParentPath")
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "parameter vhdxParentPath is required when shareBackend=vhdx")
+	}
+	sharePath := joinWindowsPath(shareParentDir, name)
+	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, shareParentDir)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "GetSmbShare: %v", err)
+	}
+	_, existingVHDXPath, existingSize, _, _, err := cs.Driver.backend.GetVolumeByName(ctx, name, vhdxParentDir)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "GetVolumeByName: %v", err)
+	}
+	if !exists {
+		vhdxPath := existingVHDXPath
+		actual := existingSize
 		if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
 			sid, err := decodeSnapID(src.GetSnapshot().GetSnapshotId())
 			if err != nil {
 				return nil, status.Errorf(codes.InvalidArgument, "invalid snapshotId: %v", err)
 			}
-			if info.VHDXPath == "" {
-				return nil, status.Error(codes.Internal, "CreateSmbShare did not return a backing path")
+			vhdxPath, err = cs.Driver.backend.ExportSnapshotAsVirtualDisk(ctx, sid.SnapshotID)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "ExportSnapshotAsVirtualDisk: %v", err)
 			}
-			if err := cs.Driver.backend.RestoreSnapshotAsFileShare(ctx, sid.SnapshotID, info.VHDXPath); err != nil {
-				return nil, status.Errorf(codes.Internal, "RestoreSnapshotAsFileShare: %v", err)
+			if vi, err := cs.Driver.backend.GetVolumeInfo(ctx, vhdxPath); err == nil {
+				actual = vi.SizeBytes
+			}
+		} else if vhdxPath == "" {
+			vhdxPath, actual, err = cs.Driver.backend.CreateVirtualDisk(ctx, name, vhdxParentDir, size)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "CreateVirtualDisk: %v", err)
 			}
 		}
+		if err := cs.Driver.backend.MountFileShareVirtualDisk(ctx, vhdxPath, sharePath); err != nil {
+			return nil, status.Errorf(codes.Internal, "MountFileShareVirtualDisk: %v", err)
+		}
+		info, err = cs.Driver.backend.CreateSmbShare(ctx, name, shareParentDir, maxInt64(size, actual),
+			splitCSVParam(params["smbFullAccess"]),
+			splitCSVParam(params["smbChangeAccess"]),
+			splitCSVParam(params["smbReadAccess"]),
+			smbOpts)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "CreateSmbShare: %v", err)
+		}
+		info.VHDXPath = vhdxPath
+		info.SharePath = sharePath
+		info.SizeBytes = actual
+		info.CapacityBytes = maxInt64(info.CapacityBytes, actual)
+	} else {
+		info.SharePath = firstNonEmpty(info.SharePath, info.VHDXPath, sharePath)
+		if existingVHDXPath == "" {
+			return nil, status.Errorf(codes.FailedPrecondition, "SMB share %q exists but VHDX %q was not found", name, joinWindowsPath(vhdxParentDir, name+".vhdx"))
+		}
+		if err := cs.Driver.backend.MountFileShareVirtualDisk(ctx, existingVHDXPath, info.SharePath); err != nil {
+			return nil, status.Errorf(codes.Internal, "MountFileShareVirtualDisk(existing): %v", err)
+		}
+		info.VHDXPath = existingVHDXPath
+		info.SizeBytes = existingSize
+		info.CapacityBytes = maxInt64(info.CapacityBytes, existingSize)
 	}
 	if smbServer != "" {
 		info.SmbServer = smbServer
 	}
-	vid := EncodeVolumeID(&VolumeID{
-		Name:          name,
-		Protocol:      ProtocolSMB,
-		SmbServer:     info.SmbServer,
-		SmbShareName:  info.SmbShareName,
-		VHDXPath:      info.VHDXPath,
-		CapacityBytes: maxInt64(info.CapacityBytes, size),
-	})
+	capacityBytes := maxInt64(info.CapacityBytes, size)
+	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolSMB, fileShareBackendVHDX, info, capacityBytes))
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
-			CapacityBytes: maxInt64(info.CapacityBytes, size),
+			CapacityBytes: capacityBytes,
 			VolumeContext: volumeContextForVolumeID(&VolumeID{
 				Protocol:     ProtocolSMB,
 				SmbServer:    info.SmbServer,
@@ -675,6 +877,15 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
@@ -687,13 +898,35 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	}
 	switch decoded.Protocol {
 	case ProtocolNFS:
-		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, decoded.VHDXPath); err != nil {
+		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
+		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, sharePath); err != nil {
 			klog.Warningf("DeleteNfsShare: %v", err)
+		}
+		if decoded.ShareBackend == fileShareBackendVHDX {
+			if decoded.VHDXPath != "" {
+				if err := cs.Driver.backend.UnmountFileShareVirtualDisk(ctx, decoded.VHDXPath, sharePath); err != nil {
+					klog.Warningf("UnmountFileShareVirtualDisk: %v", err)
+				}
+				if err := cs.Driver.backend.DeleteVirtualDisk(ctx, decoded.VHDXPath); err != nil {
+					klog.Warningf("DeleteVirtualDisk: %v", err)
+				}
+			}
 		}
 		return &csi.DeleteVolumeResponse{}, nil
 	case ProtocolSMB:
-		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, decoded.VHDXPath); err != nil {
+		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
+		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, sharePath); err != nil {
 			klog.Warningf("DeleteSmbShare: %v", err)
+		}
+		if decoded.ShareBackend == fileShareBackendVHDX {
+			if decoded.VHDXPath != "" {
+				if err := cs.Driver.backend.UnmountFileShareVirtualDisk(ctx, decoded.VHDXPath, sharePath); err != nil {
+					klog.Warningf("UnmountFileShareVirtualDisk: %v", err)
+				}
+				if err := cs.Driver.backend.DeleteVirtualDisk(ctx, decoded.VHDXPath); err != nil {
+					klog.Warningf("DeleteVirtualDisk: %v", err)
+				}
+			}
 		}
 		return &csi.DeleteVolumeResponse{}, nil
 	}
@@ -803,6 +1036,9 @@ func (cs *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacit
 	key := "vhdxParentPath"
 	if cs.Driver != nil && (cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB) {
 		key = "shareParentPath"
+		if cs.Driver.fileShareBackend == fileShareBackendVHDX {
+			key = "vhdxParentPath"
+		}
 	}
 	parentDir, ok := getStringParam(params, key)
 	if !ok {
@@ -831,6 +1067,9 @@ func (cs *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	decoded, vid, err := decodeAnyVolumeID(req.GetSourceVolumeId())
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid source_volume_id: %v", err)
+	}
+	if (decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB) && decoded.ShareBackend != fileShareBackendVHDX {
+		return nil, status.Error(codes.FailedPrecondition, "directory-backed NFS/SMB volumes do not support snapshots")
 	}
 	sourcePath := decoded.VHDXPath
 	if sourcePath == "" {
@@ -871,6 +1110,10 @@ func (cs *ControllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 }
 
 func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	if cs.Driver != nil && cs.Driver.protocol != ProtocolISCSI && cs.Driver.fileShareBackend != fileShareBackendVHDX {
+		return nil, status.Error(codes.Unimplemented, "ListSnapshots is only supported for iSCSI and VHDX-backed file-share snapshots")
+	}
+
 	var snaps []SnapshotInfo
 	switch {
 	case req.GetSnapshotId() != "":
@@ -892,6 +1135,9 @@ func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 		decoded, vid, err := decodeAnyVolumeID(req.GetSourceVolumeId())
 		if err != nil {
 			return nil, status.Errorf(codes.NotFound, "invalid source_volume_id: %v", err)
+		}
+		if (decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB) && decoded.ShareBackend != fileShareBackendVHDX {
+			return nil, status.Error(codes.FailedPrecondition, "directory-backed NFS/SMB volumes do not support snapshots")
 		}
 		sourcePath := decoded.VHDXPath
 		if sourcePath == "" {
@@ -942,6 +1188,19 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
 		if decoded.VHDXPath == "" {
 			return nil, status.Errorf(codes.InvalidArgument, "volume %q does not include a backing path", req.GetVolumeId())
+		}
+		if decoded.ShareBackend == fileShareBackendVHDX {
+			actual, err := cs.Driver.backend.ResizeVirtualDisk(ctx, decoded.VHDXPath, want)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "ResizeVirtualDisk: %v", err)
+			}
+			if err := cs.Driver.backend.MountFileShareVirtualDisk(ctx, decoded.VHDXPath, decoded.SharePath); err != nil {
+				return nil, status.Errorf(codes.Internal, "MountFileShareVirtualDisk: %v", err)
+			}
+			return &csi.ControllerExpandVolumeResponse{
+				CapacityBytes:         actual,
+				NodeExpansionRequired: false,
+			}, nil
 		}
 		actual, err := cs.Driver.backend.ResizeFileShare(ctx, decoded.VHDXPath, want)
 		if err != nil {

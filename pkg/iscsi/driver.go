@@ -20,6 +20,11 @@ import (
 	klog "k8s.io/klog/v2"
 )
 
+var (
+	newBackendFromEnvForRun        = newWinRMBackendFromEnv
+	newNonBlockingGRPCServerForRun = NewNonBlockingGRPCServer
+)
+
 // Backend is the minimal interface the ControllerServer needs.
 // Implemented by WinRMBackend in backend_winrm.go.
 type Backend interface {
@@ -50,7 +55,14 @@ type Backend interface {
 	DeleteSmbShare(ctx context.Context, name, path string) error
 	ResizeFileShare(ctx context.Context, path string, newSizeBytes int64) (int64, error)
 	RestoreSnapshotAsFileShare(ctx context.Context, snapshotID, destinationPath string) error
+	MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error
+	UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error
 }
+
+const (
+	fileShareBackendDirectory = "directory"
+	fileShareBackendVHDX      = "vhdx"
+)
 
 type NfsShareOptions struct {
 	ClientType            string
@@ -76,13 +88,14 @@ type SmbShareOptions struct {
 }
 
 type driver struct {
-	name     string
-	protocol Protocol
-	nodeID   string
-	version  string
-	endpoint string
-	cap      []*csi.VolumeCapability_AccessMode
-	cscap    []*csi.ControllerServiceCapability
+	name             string
+	protocol         Protocol
+	fileShareBackend string
+	nodeID           string
+	version          string
+	endpoint         string
+	cap              []*csi.VolumeCapability_AccessMode
+	cscap            []*csi.ControllerServiceCapability
 
 	backend Backend // <-- wired for controllerserver.go to use
 }
@@ -90,6 +103,8 @@ type driver struct {
 const driverName = "iscsi.csi.windows.microsoft.com"
 const nfsDriverName = "nfs.csi.windows.microsoft.com"
 const smbDriverName = "smb.csi.windows.microsoft.com"
+const nfsVHDXDriverName = "nfs-vhdx.csi.windows.microsoft.com"
+const smbVHDXDriverName = "smb-vhdx.csi.windows.microsoft.com"
 
 var version = "0.1.0"
 
@@ -108,23 +123,33 @@ func NewProtocolDriver(protocol Protocol, nodeID, endpoint string) *driver {
 }
 
 func NewNamedDriver(name, nodeID, endpoint string) *driver {
-	protocol, err := protocolForDriverName(name)
+	protocol, backend, err := driverConfigForName(name)
 	if err != nil {
 		klog.Warningf("unknown CSI driver name %q; defaulting protocol to %s", name, ProtocolISCSI)
 		protocol = ProtocolISCSI
+		backend = ""
 	}
-	return newNamedProtocolDriver(name, protocol, nodeID, endpoint)
+	return newNamedProtocolDriverWithShareBackend(name, protocol, backend, nodeID, endpoint)
 }
 
 func newNamedProtocolDriver(name string, protocol Protocol, nodeID, endpoint string) *driver {
+	backend := ""
+	if protocol == ProtocolNFS || protocol == ProtocolSMB {
+		backend = fileShareBackendDirectory
+	}
+	return newNamedProtocolDriverWithShareBackend(name, protocol, backend, nodeID, endpoint)
+}
+
+func newNamedProtocolDriverWithShareBackend(name string, protocol Protocol, fileShareBackend, nodeID, endpoint string) *driver {
 	klog.V(1).Infof("driver: %s protocol: %s version: %s nodeID: %s endpoint: %s", name, protocol, version, nodeID, endpoint)
 
 	d := &driver{
-		name:     driverName,
-		protocol: protocol,
-		version:  version,
-		nodeID:   nodeID,
-		endpoint: endpoint,
+		name:             driverName,
+		protocol:         protocol,
+		fileShareBackend: fileShareBackend,
+		version:          version,
+		nodeID:           nodeID,
+		endpoint:         endpoint,
 	}
 	d.name = name
 
@@ -146,16 +171,21 @@ func newNamedProtocolDriver(name string, protocol Protocol, nodeID, endpoint str
 	d.AddVolumeCapabilityAccessModes(accessModes)
 
 	// Advertise Controller RPCs we actually implement (see controllerserver.go). :contentReference[oaicite:1]{index=1}
-	d.AddControllerServiceCapabilities([]csi.ControllerServiceCapability_RPC_Type{
+	controllerCaps := []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME,
 		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
-		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
-		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 		// If your CSI lib includes this enum (it should, since ControllerGetVolume is implemented):
 		csi.ControllerServiceCapability_RPC_GET_VOLUME,
-	})
+	}
+	if protocol == ProtocolISCSI || fileShareBackend == fileShareBackendVHDX {
+		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT)
+	}
+	if protocol == ProtocolISCSI || fileShareBackend == fileShareBackendVHDX {
+		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS)
+	}
+	d.AddControllerServiceCapabilities(controllerCaps)
 
 	return d
 }
@@ -174,15 +204,24 @@ func driverNameForProtocol(protocol Protocol) (string, error) {
 }
 
 func protocolForDriverName(name string) (Protocol, error) {
+	protocol, _, err := driverConfigForName(name)
+	return protocol, err
+}
+
+func driverConfigForName(name string) (Protocol, string, error) {
 	switch strings.TrimSpace(name) {
 	case driverName:
-		return ProtocolISCSI, nil
+		return ProtocolISCSI, "", nil
 	case nfsDriverName:
-		return ProtocolNFS, nil
+		return ProtocolNFS, fileShareBackendDirectory, nil
 	case smbDriverName:
-		return ProtocolSMB, nil
+		return ProtocolSMB, fileShareBackendDirectory, nil
+	case nfsVHDXDriverName:
+		return ProtocolNFS, fileShareBackendVHDX, nil
+	case smbVHDXDriverName:
+		return ProtocolSMB, fileShareBackendVHDX, nil
 	default:
-		return "", fmt.Errorf("unknown CSI driver name: %s", name)
+		return "", "", fmt.Errorf("unknown CSI driver name: %s", name)
 	}
 }
 
@@ -197,13 +236,13 @@ func NewControllerServer(d *driver) *ControllerServer {
 
 func (d *driver) Run() {
 	// Build backend from environment and attach it.
-	b, err := newWinRMBackendFromEnv()
+	b, err := newBackendFromEnvForRun()
 	if err != nil {
 		klog.Fatalf("failed to init WinRM backend: %v", err)
 	}
 	d.backend = b
 
-	s := NewNonBlockingGRPCServer()
+	s := newNonBlockingGRPCServerForRun()
 	s.Start(d.endpoint,
 		NewDefaultIdentityServer(d),
 		NewControllerServer(d),

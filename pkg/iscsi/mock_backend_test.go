@@ -173,6 +173,16 @@ func (m *MockBackend) RestoreSnapshotAsFileShare(ctx context.Context, snapshotID
 	return args.Error(0)
 }
 
+func (m *MockBackend) MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	args := m.Called(ctx, vhdxPath, mountPath)
+	return args.Error(0)
+}
+
+func (m *MockBackend) UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	args := m.Called(ctx, vhdxPath, mountPath)
+	return args.Error(0)
+}
+
 // ---------------------------------------------------------------------------
 // MockBackend usage examples (integration-style tests)
 // ---------------------------------------------------------------------------

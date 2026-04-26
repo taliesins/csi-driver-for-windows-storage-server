@@ -41,6 +41,8 @@ type mockBackend struct {
 	deleteSmbShareFn            func(ctx context.Context, name, path string) error
 	resizeFileShareFn           func(ctx context.Context, path string, newSizeBytes int64) (int64, error)
 	restoreFileShareSnapshotFn  func(ctx context.Context, snapshotID, destinationPath string) error
+	mountFileShareVhdxFn        func(ctx context.Context, vhdxPath, mountPath string) error
+	unmountFileShareVhdxFn      func(ctx context.Context, vhdxPath, mountPath string) error
 }
 
 func (m *mockBackend) EnsureTarget(ctx context.Context, targetIQN string) error {
@@ -193,6 +195,18 @@ func (m *mockBackend) RestoreSnapshotAsFileShare(ctx context.Context, snapshotID
 	}
 	return nil
 }
+func (m *mockBackend) MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	if m.mountFileShareVhdxFn != nil {
+		return m.mountFileShareVhdxFn(ctx, vhdxPath, mountPath)
+	}
+	return nil
+}
+func (m *mockBackend) UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	if m.unmountFileShareVhdxFn != nil {
+		return m.unmountFileShareVhdxFn(ctx, vhdxPath, mountPath)
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // Test helper - create a ControllerServer with mock backend
@@ -205,8 +219,25 @@ func newTestControllerServer(t *testing.T) (*ControllerServer, *driver, *mockBac
 
 func newTestControllerServerForProtocol(t *testing.T, protocol Protocol) (*ControllerServer, *driver, *mockBackend) {
 	t.Helper()
+	backend := ""
+	if protocol == ProtocolNFS || protocol == ProtocolSMB {
+		backend = fileShareBackendDirectory
+	}
+	return newTestControllerServerForProtocolAndBackend(t, protocol, backend)
+}
+
+func newTestControllerServerForProtocolAndBackend(t *testing.T, protocol Protocol, fileShareBackend string) (*ControllerServer, *driver, *mockBackend) {
+	t.Helper()
 	mockBackend := &mockBackend{}
-	d := NewProtocolDriver(protocol, "node-001", "unix:///var/run/csi/csi.sock")
+	name, err := driverNameForProtocol(protocol)
+	require.NoError(t, err)
+	if protocol == ProtocolNFS && fileShareBackend == fileShareBackendVHDX {
+		name = nfsVHDXDriverName
+	}
+	if protocol == ProtocolSMB && fileShareBackend == fileShareBackendVHDX {
+		name = smbVHDXDriverName
+	}
+	d := newNamedProtocolDriverWithShareBackend(name, protocol, fileShareBackend, "node-001", "unix:///var/run/csi/csi.sock")
 	d.backend = mockBackend
 	cs := NewControllerServer(d)
 	return cs, d, mockBackend
@@ -232,6 +263,108 @@ func newTestSnapshotID(t *testing.T) string {
 		OriginalPath: "D:\\vhdx\\test-volume.vhdx",
 	}
 	return encodeSnapID(sid)
+}
+
+func TestRequiredBytesFromRange(t *testing.T) {
+	const oneGiB = int64(1 << 30)
+	tests := []struct {
+		name    string
+		r       *csi.CapacityRange
+		want    int64
+		wantErr string
+	}{
+		{name: "nil range uses minimum", want: oneGiB},
+		{name: "empty range uses minimum", r: &csi.CapacityRange{}, want: oneGiB},
+		{name: "required below minimum", r: &csi.CapacityRange{RequiredBytes: 1}, want: oneGiB},
+		{name: "required above minimum", r: &csi.CapacityRange{RequiredBytes: oneGiB * 2}, want: oneGiB * 2},
+		{name: "limit below minimum", r: &csi.CapacityRange{LimitBytes: 1}, want: oneGiB},
+		{name: "required and limit valid", r: &csi.CapacityRange{RequiredBytes: oneGiB * 2, LimitBytes: oneGiB * 3}, want: oneGiB * 2},
+		{name: "required greater than limit", r: &csi.CapacityRange{RequiredBytes: oneGiB * 3, LimitBytes: oneGiB * 2}, wantErr: "requiredBytes > limitBytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := requiredBytesFromRange(tt.r, 1)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFileShareParamValidation(t *testing.T) {
+	t.Run("invalid backend", func(t *testing.T) {
+		cs, _, _ := newTestControllerServerForProtocol(t, ProtocolNFS)
+		_, err := cs.fileShareBackendFromParams(map[string]string{"shareBackend": "bad"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "shareBackend")
+	})
+
+	t.Run("driver rejects different backend", func(t *testing.T) {
+		cs, _, _ := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+		_, err := cs.fileShareBackendFromParams(map[string]string{"shareBackend": fileShareBackendDirectory})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supports")
+	})
+
+	t.Run("invalid nfs bool", func(t *testing.T) {
+		_, err := nfsOptionsFromParams(map[string]string{"nfsAllowRootAccess": "not-bool"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a boolean")
+	})
+
+	t.Run("invalid nfs integer", func(t *testing.T) {
+		_, err := nfsOptionsFromParams(map[string]string{"nfsAnonymousUid": "bad"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be an integer")
+	})
+
+	t.Run("invalid nfs permission", func(t *testing.T) {
+		_, err := nfsOptionsFromParams(map[string]string{"nfsPermission": "admin"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nfsPermission")
+	})
+
+	t.Run("valid nfs aliases", func(t *testing.T) {
+		opts, err := nfsOptionsFromParams(map[string]string{
+			"nfsPermission":            "read-write",
+			"nfsEnableAnonymousAccess": "yes",
+			"nfsEnableUnmappedAccess":  "no",
+			"nfsAnonymousUid":          "65534",
+			"nfsAnonymousGid":          "65533",
+			"nfsAuthentication":        "sys, krb5",
+			"nfsLanguageEncoding":      "EUC-JP",
+			"nfsClientType":            "clientgroup",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "readwrite", opts.Permission)
+		assert.Equal(t, "clientgroup", opts.ClientType)
+		require.NotNil(t, opts.EnableAnonymousAccess)
+		assert.True(t, *opts.EnableAnonymousAccess)
+		require.NotNil(t, opts.EnableUnmappedAccess)
+		assert.False(t, *opts.EnableUnmappedAccess)
+		require.NotNil(t, opts.AnonymousUID)
+		assert.Equal(t, 65534, *opts.AnonymousUID)
+		require.NotNil(t, opts.AnonymousGID)
+		assert.Equal(t, 65533, *opts.AnonymousGID)
+		assert.Equal(t, []string{"sys", "krb5"}, opts.Authentication)
+		assert.Equal(t, "EUC-JP", opts.LanguageEncoding)
+	})
+
+	t.Run("invalid smb bool", func(t *testing.T) {
+		_, err := smbOptionsFromParams(map[string]string{"smbEncryptData": "not-bool"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a boolean")
+	})
+
+	t.Run("invalid smb uint", func(t *testing.T) {
+		_, err := smbOptionsFromParams(map[string]string{"smbConcurrentUserLimit": "-1"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "non-negative integer")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -572,10 +705,27 @@ func TestCreateVolume_SMB(t *testing.T) {
 }
 
 func TestCreateVolume_NFSOptionsAndSnapshotRestore(t *testing.T) {
-	cs, _, mockBackend := newTestControllerServerForProtocol(t, ProtocolNFS)
-	var restored bool
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	var mounted bool
 	mockBackend.getNfsShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
 		return false, VolumeInfo{}, nil
+	}
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+		assert.Equal(t, "D:\\nfs-vhdx", parentDir)
+		return false, "", 0, "", -1, nil
+	}
+	mockBackend.exportSnapFn = func(ctx context.Context, snapshotID string) (string, error) {
+		assert.Equal(t, "snap-001", snapshotID)
+		return "D:\\nfs-vhdx\\nfs-from-snap.vhdx", nil
+	}
+	mockBackend.getVolumeInfoFn = func(ctx context.Context, vhdxPath string) (VolumeInfo, error) {
+		return VolumeInfo{VHDXPath: vhdxPath, SizeBytes: 1073741824}, nil
+	}
+	mockBackend.mountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-from-snap.vhdx", vhdxPath)
+		assert.Equal(t, "D:\\shares\\nfs-from-snap", mountPath)
+		mounted = true
+		return nil
 	}
 	mockBackend.createNfsShareWithOptionsFn = func(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error) {
 		require.Len(t, opts, 1)
@@ -591,14 +741,9 @@ func TestCreateVolume_NFSOptionsAndSnapshotRestore(t *testing.T) {
 			NfsServer:     "nfs-server",
 			NfsExportPath: "/" + name,
 			VHDXPath:      parentDir + "\\" + name,
+			SharePath:     parentDir + "\\" + name,
 			CapacityBytes: sizeBytes,
 		}, nil
-	}
-	mockBackend.restoreFileShareSnapshotFn = func(ctx context.Context, snapshotID, destinationPath string) error {
-		assert.Equal(t, "snap-001", snapshotID)
-		assert.Equal(t, "D:\\shares\\nfs-from-snap", destinationPath)
-		restored = true
-		return nil
 	}
 
 	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
@@ -608,7 +753,9 @@ func TestCreateVolume_NFSOptionsAndSnapshotRestore(t *testing.T) {
 		},
 		Parameters: map[string]string{
 			"protocol":                "nfs",
+			"shareBackend":            "vhdx",
 			"shareParentPath":         "D:\\shares",
+			"vhdxParentPath":          "D:\\nfs-vhdx",
 			"nfsServer":               "10.0.0.2",
 			"nfsClientName":           "10.0.0.10,10.0.0.11",
 			"nfsClientType":           "clientgroup",
@@ -626,18 +773,37 @@ func TestCreateVolume_NFSOptionsAndSnapshotRestore(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, resp.Volume)
-	assert.True(t, restored)
+	assert.True(t, mounted)
 	assert.NotNil(t, resp.Volume.ContentSource)
 	decoded, err := DecodeVolumeID(resp.Volume.VolumeId)
 	require.NoError(t, err)
-	assert.Equal(t, "D:\\shares\\nfs-from-snap", decoded.VHDXPath)
+	assert.Equal(t, fileShareBackendVHDX, decoded.ShareBackend)
+	assert.Equal(t, "D:\\nfs-vhdx\\nfs-from-snap.vhdx", decoded.VHDXPath)
+	assert.Equal(t, "D:\\shares\\nfs-from-snap", decoded.SharePath)
 }
 
 func TestCreateVolume_SMBOptionsAndSnapshotRestore(t *testing.T) {
-	cs, _, mockBackend := newTestControllerServerForProtocol(t, ProtocolSMB)
-	var restored bool
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolSMB, fileShareBackendVHDX)
+	var mounted bool
 	mockBackend.getSmbShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
 		return false, VolumeInfo{}, nil
+	}
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+		assert.Equal(t, "D:\\smb-vhdx", parentDir)
+		return false, "", 0, "", -1, nil
+	}
+	mockBackend.exportSnapFn = func(ctx context.Context, snapshotID string) (string, error) {
+		assert.Equal(t, "snap-001", snapshotID)
+		return "D:\\smb-vhdx\\smb-from-snap.vhdx", nil
+	}
+	mockBackend.getVolumeInfoFn = func(ctx context.Context, vhdxPath string) (VolumeInfo, error) {
+		return VolumeInfo{VHDXPath: vhdxPath, SizeBytes: 1073741824}, nil
+	}
+	mockBackend.mountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		assert.Equal(t, "D:\\smb-vhdx\\smb-from-snap.vhdx", vhdxPath)
+		assert.Equal(t, "D:\\shares\\smb-from-snap", mountPath)
+		mounted = true
+		return nil
 	}
 	mockBackend.createSmbShareWithOptionsFn = func(ctx context.Context, name, parentDir string, sizeBytes int64, fullAccess, changeAccess, readAccess []string, opts ...SmbShareOptions) (VolumeInfo, error) {
 		require.Len(t, opts, 1)
@@ -655,14 +821,9 @@ func TestCreateVolume_SMBOptionsAndSnapshotRestore(t *testing.T) {
 			SmbServer:     "smb-server",
 			SmbShareName:  name,
 			VHDXPath:      parentDir + "\\" + name,
+			SharePath:     parentDir + "\\" + name,
 			CapacityBytes: sizeBytes,
 		}, nil
-	}
-	mockBackend.restoreFileShareSnapshotFn = func(ctx context.Context, snapshotID, destinationPath string) error {
-		assert.Equal(t, "snap-001", snapshotID)
-		assert.Equal(t, "D:\\shares\\smb-from-snap", destinationPath)
-		restored = true
-		return nil
 	}
 
 	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
@@ -672,7 +833,9 @@ func TestCreateVolume_SMBOptionsAndSnapshotRestore(t *testing.T) {
 		},
 		Parameters: map[string]string{
 			"protocol":                 "smb",
+			"shareBackend":             "vhdx",
 			"shareParentPath":          "D:\\shares",
+			"vhdxParentPath":           "D:\\smb-vhdx",
 			"smbServer":                "10.0.0.3",
 			"smbFullAccess":            "DOMAIN\\storage",
 			"smbNoAccess":              "DOMAIN\\blocked",
@@ -691,11 +854,120 @@ func TestCreateVolume_SMBOptionsAndSnapshotRestore(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, resp.Volume)
-	assert.True(t, restored)
+	assert.True(t, mounted)
 	assert.NotNil(t, resp.Volume.ContentSource)
 	decoded, err := DecodeVolumeID(resp.Volume.VolumeId)
 	require.NoError(t, err)
-	assert.Equal(t, "D:\\shares\\smb-from-snap", decoded.VHDXPath)
+	assert.Equal(t, fileShareBackendVHDX, decoded.ShareBackend)
+	assert.Equal(t, "D:\\smb-vhdx\\smb-from-snap.vhdx", decoded.VHDXPath)
+	assert.Equal(t, "D:\\shares\\smb-from-snap", decoded.SharePath)
+}
+
+func TestCreateVolume_VHDXBackedNFS_IdempotentExistingShare(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	var mounted bool
+	mockBackend.getNfsShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
+		assert.Equal(t, "nfs-existing", name)
+		assert.Equal(t, "D:\\shares", parentDir)
+		return true, VolumeInfo{
+			VolumeName:    name,
+			Protocol:      ProtocolNFS,
+			NfsServer:     "backend-server",
+			NfsExportPath: "/" + name,
+			VHDXPath:      "D:\\shares\\nfs-existing",
+			CapacityBytes: 1073741824,
+		}, nil
+	}
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+		assert.Equal(t, "nfs-existing", name)
+		assert.Equal(t, "D:\\nfs-vhdx", parentDir)
+		return true, "D:\\nfs-vhdx\\nfs-existing.vhdx", 2147483648, "", -1, nil
+	}
+	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
+		t.Fatalf("idempotent VHDX-backed NFS create should not create another virtual disk")
+		return "", 0, nil
+	}
+	mockBackend.createNfsShareWithOptionsFn = func(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error) {
+		t.Fatalf("idempotent VHDX-backed NFS create should not recreate an existing share")
+		return VolumeInfo{}, nil
+	}
+	mockBackend.mountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-existing.vhdx", vhdxPath)
+		assert.Equal(t, "D:\\shares\\nfs-existing", mountPath)
+		mounted = true
+		return nil
+	}
+
+	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "nfs-existing",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER}},
+		},
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 1073741824},
+		Parameters: map[string]string{
+			"protocol":        "nfs",
+			"shareBackend":    "vhdx",
+			"shareParentPath": "D:\\shares",
+			"vhdxParentPath":  "D:\\nfs-vhdx",
+			"nfsServer":       "10.0.0.2",
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp.Volume)
+	assert.True(t, mounted)
+	assert.Equal(t, int64(2147483648), resp.Volume.CapacityBytes)
+	assert.Equal(t, "10.0.0.2", resp.Volume.VolumeContext["nfsServer"])
+	decoded, err := DecodeVolumeID(resp.Volume.VolumeId)
+	require.NoError(t, err)
+	assert.Equal(t, fileShareBackendVHDX, decoded.ShareBackend)
+	assert.Equal(t, "D:\\nfs-vhdx\\nfs-existing.vhdx", decoded.VHDXPath)
+	assert.Equal(t, "D:\\shares\\nfs-existing", decoded.SharePath)
+	assert.Equal(t, int64(2147483648), decoded.CapacityBytes)
+}
+
+func TestCreateVolume_VHDXBackedSMB_ExistingShareMissingVHDX(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolSMB, fileShareBackendVHDX)
+	mockBackend.getSmbShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
+		assert.Equal(t, "smb-existing", name)
+		assert.Equal(t, "D:\\shares", parentDir)
+		return true, VolumeInfo{
+			VolumeName:    name,
+			Protocol:      ProtocolSMB,
+			SmbServer:     "smb-server",
+			SmbShareName:  name,
+			VHDXPath:      "D:\\shares\\smb-existing",
+			CapacityBytes: 1073741824,
+		}, nil
+	}
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+		assert.Equal(t, "smb-existing", name)
+		assert.Equal(t, "D:\\smb-vhdx", parentDir)
+		return false, "", 0, "", -1, nil
+	}
+	mockBackend.mountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		t.Fatalf("existing SMB share without a VHDX should fail before mounting; vhdxPath=%s mountPath=%s", vhdxPath, mountPath)
+		return nil
+	}
+
+	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "smb-existing",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER}},
+		},
+		Parameters: map[string]string{
+			"protocol":        "smb",
+			"shareBackend":    "vhdx",
+			"shareParentPath": "D:\\shares",
+			"vhdxParentPath":  "D:\\smb-vhdx",
+			"smbServer":       "10.0.0.3",
+		},
+	})
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "FailedPrecondition")
+	assert.Contains(t, err.Error(), "exists but VHDX")
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +1024,82 @@ func TestDeleteVolume_NFS(t *testing.T) {
 	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
+}
+
+func TestDeleteVolume_VHDXBackedNFSUnmountsAndDeletes(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          "nfs-vhdx",
+		Protocol:      ProtocolNFS,
+		ShareBackend:  fileShareBackendVHDX,
+		SharePath:     "D:\\shares\\nfs-vhdx",
+		NfsServer:     "10.0.0.2",
+		NfsExportPath: "/nfs-vhdx",
+		VHDXPath:      "D:\\nfs-vhdx\\nfs-vhdx.vhdx",
+	})
+	var deletedShare, unmounted, deletedDisk bool
+	mockBackend.deleteNfsShareFn = func(ctx context.Context, name, path string) error {
+		assert.Equal(t, "nfs-vhdx", name)
+		assert.Equal(t, "D:\\shares\\nfs-vhdx", path)
+		deletedShare = true
+		return nil
+	}
+	mockBackend.unmountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-vhdx.vhdx", vhdxPath)
+		assert.Equal(t, "D:\\shares\\nfs-vhdx", mountPath)
+		unmounted = true
+		return nil
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-vhdx.vhdx", vhdxPath)
+		deletedDisk = true
+		return nil
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, deletedShare)
+	assert.True(t, unmounted)
+	assert.True(t, deletedDisk)
+}
+
+func TestDeleteVolume_VHDXBackedSMBUnmountsAndDeletes(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolSMB, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:         "smb-vhdx",
+		Protocol:     ProtocolSMB,
+		ShareBackend: fileShareBackendVHDX,
+		SharePath:    "D:\\shares\\smb-vhdx",
+		SmbServer:    "10.0.0.3",
+		SmbShareName: "smb-vhdx",
+		VHDXPath:     "D:\\smb-vhdx\\smb-vhdx.vhdx",
+	})
+	var deletedShare, unmounted, deletedDisk bool
+	mockBackend.deleteSmbShareFn = func(ctx context.Context, name, path string) error {
+		assert.Equal(t, "smb-vhdx", name)
+		assert.Equal(t, "D:\\shares\\smb-vhdx", path)
+		deletedShare = true
+		return nil
+	}
+	mockBackend.unmountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		assert.Equal(t, "D:\\smb-vhdx\\smb-vhdx.vhdx", vhdxPath)
+		assert.Equal(t, "D:\\shares\\smb-vhdx", mountPath)
+		unmounted = true
+		return nil
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		assert.Equal(t, "D:\\smb-vhdx\\smb-vhdx.vhdx", vhdxPath)
+		deletedDisk = true
+		return nil
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, deletedShare)
+	assert.True(t, unmounted)
+	assert.True(t, deletedDisk)
 }
 
 func TestControllerPublishVolume_SMB(t *testing.T) {
@@ -1066,19 +1414,50 @@ func TestCreateSnapshot_Success(t *testing.T) {
 	assert.True(t, resp.Snapshot.ReadyToUse)
 }
 
-func TestCreateSnapshot_NFS(t *testing.T) {
+func TestCreateSnapshot_DirectoryBackedNFSRejected(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServerForProtocol(t, ProtocolNFS)
 	vid := EncodeVolumeID(&VolumeID{
 		Name:          "nfs-vol",
 		Protocol:      ProtocolNFS,
+		ShareBackend:  fileShareBackendDirectory,
 		NfsServer:     "10.0.0.2",
 		NfsExportPath: "/nfs-vol",
 		VHDXPath:      "D:\\shares\\nfs-vol",
 	})
 	mockBackend.createSnapshotFn = func(ctx context.Context, path, desc string) (SnapshotInfo, error) {
-		assert.Equal(t, "D:\\shares\\nfs-vol", path)
+		t.Fatalf("directory-backed NFS CreateSnapshot should not call the backend; path: %s", path)
+		return SnapshotInfo{}, nil
+	}
+
+	resp, err := cs.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{
+		Name:           "nfs-snap",
+		SourceVolumeId: vid,
+	})
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "directory-backed")
+}
+
+func TestCreateSnapshot_VHDXBackedNFS(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          "nfs-vol",
+		Protocol:      ProtocolNFS,
+		ShareBackend:  fileShareBackendVHDX,
+		SharePath:     "D:\\shares\\nfs-vol",
+		NfsServer:     "10.0.0.2",
+		NfsExportPath: "/nfs-vol",
+		VHDXPath:      "D:\\nfs-vhdx\\nfs-vol.vhdx",
+	})
+	mockBackend.createSnapshotFn = func(ctx context.Context, path, desc string) (SnapshotInfo, error) {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-vol.vhdx", path)
 		assert.Equal(t, "nfs-snap", desc)
-		return SnapshotInfo{SnapshotID: "D:\\shares\\.csi-snapshots\\nfs-snap", OriginalPath: path, Description: desc}, nil
+		return SnapshotInfo{
+			SnapshotID:   "snap-001",
+			OriginalPath: path,
+			Description:  desc,
+		}, nil
 	}
 
 	resp, err := cs.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{
@@ -1090,6 +1469,10 @@ func TestCreateSnapshot_NFS(t *testing.T) {
 	require.NotNil(t, resp.Snapshot)
 	assert.Equal(t, vid, resp.Snapshot.SourceVolumeId)
 	assert.True(t, resp.Snapshot.ReadyToUse)
+	sid, err := decodeSnapID(resp.Snapshot.SnapshotId)
+	require.NoError(t, err)
+	assert.Equal(t, "snap-001", sid.SnapshotID)
+	assert.Equal(t, "D:\\nfs-vhdx\\nfs-vol.vhdx", sid.OriginalPath)
 }
 
 // ---------------------------------------------------------------------------
@@ -1182,8 +1565,35 @@ func TestListSnapshots_NFSBySourceVolumeID(t *testing.T) {
 		VHDXPath:      "D:\\shares\\nfs-vol",
 	})
 	mockBackend.listSnapshotsFn = func(ctx context.Context, path string) ([]SnapshotInfo, error) {
-		assert.Equal(t, "D:\\shares\\nfs-vol", path)
-		return []SnapshotInfo{{SnapshotID: "D:\\shares\\.csi-snapshots\\snap-001", OriginalPath: path}}, nil
+		t.Fatalf("NFS ListSnapshots should not call the backend; path: %s", path)
+		return nil, nil
+	}
+
+	resp, err := cs.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{
+		SourceVolumeId: vid,
+	})
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "Unimplemented")
+}
+
+func TestListSnapshots_VHDXBackedNFSBySourceVolumeID(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          "nfs-vol",
+		Protocol:      ProtocolNFS,
+		ShareBackend:  fileShareBackendVHDX,
+		SharePath:     "D:\\shares\\nfs-vol",
+		NfsServer:     "10.0.0.2",
+		NfsExportPath: "/nfs-vol",
+		VHDXPath:      "D:\\nfs-vhdx\\nfs-vol.vhdx",
+	})
+	mockBackend.listSnapshotsFn = func(ctx context.Context, path string) ([]SnapshotInfo, error) {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-vol.vhdx", path)
+		return []SnapshotInfo{
+			{SnapshotID: "snap-001", OriginalPath: path, SizeBytes: 1073741824},
+		}, nil
 	}
 
 	resp, err := cs.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{
@@ -1288,6 +1698,47 @@ func TestControllerExpandVolume_NFS(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, int64(2147483648), resp.CapacityBytes)
 	assert.False(t, resp.NodeExpansionRequired)
+}
+
+func TestControllerExpandVolume_VHDXBackedNFSRemountsShare(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          "nfs-vhdx",
+		Protocol:      ProtocolNFS,
+		ShareBackend:  fileShareBackendVHDX,
+		SharePath:     "D:\\shares\\nfs-vhdx",
+		NfsServer:     "10.0.0.2",
+		NfsExportPath: "/nfs-vhdx",
+		VHDXPath:      "D:\\nfs-vhdx\\nfs-vhdx.vhdx",
+		CapacityBytes: 1073741824,
+	})
+	var remounted bool
+	mockBackend.resizeVirtualDiskFn = func(ctx context.Context, vhdxPath string, newSizeBytes int64) (int64, error) {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-vhdx.vhdx", vhdxPath)
+		assert.Equal(t, int64(2147483648), newSizeBytes)
+		return newSizeBytes, nil
+	}
+	mockBackend.mountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		assert.Equal(t, "D:\\nfs-vhdx\\nfs-vhdx.vhdx", vhdxPath)
+		assert.Equal(t, "D:\\shares\\nfs-vhdx", mountPath)
+		remounted = true
+		return nil
+	}
+	mockBackend.resizeFileShareFn = func(ctx context.Context, path string, newSizeBytes int64) (int64, error) {
+		t.Fatalf("VHDX-backed file-share expansion should resize the virtual disk, not the directory quota")
+		return 0, nil
+	}
+
+	resp, err := cs.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      vid,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 2147483648},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, int64(2147483648), resp.CapacityBytes)
+	assert.False(t, resp.NodeExpansionRequired)
+	assert.True(t, remounted)
 }
 
 // ---------------------------------------------------------------------------

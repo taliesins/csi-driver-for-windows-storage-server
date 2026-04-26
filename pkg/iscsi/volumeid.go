@@ -23,6 +23,8 @@ const (
 type VolumeID struct {
 	Name          string
 	Protocol      Protocol
+	ShareBackend  string
+	SharePath     string
 	TargetPortal  string
 	TargetIQN     string
 	LUN           int
@@ -49,6 +51,12 @@ func EncodeVolumeID(v *VolumeID) string {
 	}
 	if v.VHDXPath != "" {
 		q.Set("vhdxPath", v.VHDXPath)
+	}
+	if v.ShareBackend != "" {
+		q.Set("shareBackend", v.ShareBackend)
+	}
+	if v.SharePath != "" {
+		q.Set("sharePath", v.SharePath)
 	}
 
 	switch v.Protocol {
@@ -118,6 +126,8 @@ func DecodeVolumeID(id string) (*VolumeID, error) {
 		out.CapacityBytes = capacity
 	}
 	out.VHDXPath = q.Get("vhdxPath")
+	out.ShareBackend = q.Get("shareBackend")
+	out.SharePath = q.Get("sharePath")
 
 	switch proto {
 	case ProtocolISCSI:
