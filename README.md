@@ -245,30 +245,40 @@ kubectl -n kube-system get pod -o wide -l app=csi-for-windows-server-node
 - Install by [kubectl](./docs/install-csi-driver-master.md)
 - Install by [Helm](./docs/install-csi-driver-master.md)
 
-### Install via Helm
+### Install via Helm (OCI / GHCR)
 
-The project includes a Helm chart at [`chart/csi-driver-for-windows-storage-server/`](./chart/csi-driver-for-windows-storage-server/).
+The chart is published as an OCI artifact to GHCR at `oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server`.
 
-#### 1. Add the chart to your Helm repository
+#### 1. Install from GHCR
 
 ```sh
-helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system \
   --create-namespace
 ```
 
-#### 2. Customize values (optional)
+#### 2. Specify a version
+
+```sh
+helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --create-namespace \
+  --version 0.1.0
+```
+
+#### 3. Customize values (optional)
 
 Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-server/values.yaml):
 
 ```sh
-helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system \
+  --create-namespace \
   --set image.tag=v0.2.0 \
   --set image.pullPolicy=Always
 ```
 
-#### 3. Verify the installation
+#### 4. Verify the installation
 
 ```sh
 helm status csi-driver-for-windows-storage-server -n kube-system
@@ -276,15 +286,25 @@ helm status csi-driver-for-windows-storage-server -n kube-system
 kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-windows-storage-server
 ```
 
-#### 4. Upgrade / uninstall
+#### 5. Upgrade / uninstall
 
 ```sh
 # Upgrade
-helm upgrade csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+helm upgrade csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system
 
 # Uninstall
 helm uninstall csi-driver-for-windows-storage-server -n kube-system
+```
+
+### Install via Helm (local chart)
+
+For development or air-gapped environments, you can install from the local chart directory:
+
+```sh
+helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --create-namespace
 ```
 
 ### Troubleshooting
