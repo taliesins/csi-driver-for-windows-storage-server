@@ -26,7 +26,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: taliesins/csi-driver-iscsi-for-windows
+  IMAGE_NAME: taliesins/csi-driver-for-windows-server
 
 jobs:
   lint:

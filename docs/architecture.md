@@ -57,7 +57,7 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph cmd["cmd/iscsiplugin"]
+    subgraph cmd["cmd/csiplugin"]
         Main["main.go<br/>(entry point)"]
     end
 

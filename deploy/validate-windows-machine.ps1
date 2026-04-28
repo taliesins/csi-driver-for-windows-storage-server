@@ -13,8 +13,8 @@ and cleanup.
 
 .EXAMPLE
 .\deploy\validate-windows-machine.ps1 `
-  -StoragePath C:\data\taliesins\csi-driver-iscsi-for-windows2\vhdx `
-  -SharePath C:\data\taliesins\csi-driver-iscsi-for-windows2\shares
+  -StoragePath C:\data\taliesins\csi-driver-for-windows-storage-server\vhdx `
+  -SharePath C:\data\taliesins\csi-driver-for-windows-storage-server\shares
 
 .EXAMPLE
 .\deploy\validate-windows-machine.ps1 `
@@ -30,11 +30,11 @@ and cleanup.
 param(
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string]$StoragePath = "C:\data\taliesins\csi-driver-iscsi-for-windows2\vhdx",
+    [string]$StoragePath = "C:\data\taliesins\csi-driver-for-windows-storage-server\vhdx",
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string]$SharePath = "C:\data\taliesins\csi-driver-iscsi-for-windows2\shares",
+    [string]$SharePath = "C:\data\taliesins\csi-driver-for-windows-storage-server\shares",
 
     [Parameter()]
     [ValidateRange(1048576, [int64]::MaxValue)]

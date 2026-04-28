@@ -1,7 +1,7 @@
 # Implementation Plan: Multi-Protocol CSI Driver Expansion
 
 ## Overview
-Expand `csi-driver-iscsi-for-windows` from iSCSI-only to support **iSCSI + NFS + SMB** protocols on Windows Server 2025 Storage Server, with comprehensive test coverage.
+Expand `csi-driver-for-windows-storage-server` from iSCSI-only to support **iSCSI + NFS + SMB** protocols on Windows Server 2025 Storage Server, with comprehensive test coverage.
 
 ## Architecture Decisions
 

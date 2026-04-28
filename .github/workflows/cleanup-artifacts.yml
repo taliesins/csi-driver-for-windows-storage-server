@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  PACKAGE_NAME: csi-driver-iscsi-for-windows
+  PACKAGE_NAME: csi-driver-for-windows-server
   PR_TAG_PREFIX: 0.0.0-pr-
   DEV_TAG_PREFIX: dev-
 

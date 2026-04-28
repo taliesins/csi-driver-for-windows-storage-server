@@ -20,7 +20,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/taliesins/csi-driver-iscsi-for-windows/pkg/iscsi"
+	"github.com/taliesins/csi-driver-for-windows-storage-server/pkg/iscsi"
 	klog "k8s.io/klog/v2"
 )
 

@@ -6,13 +6,13 @@
 
 ```console
 $ mkdir -p $GOPATH/src/sigs.k8s.io/
-$ git clone https://github.com/taliesins/csi-driver-iscsi-for-windows $GOPATH/src/github.com/taliesins/csi-driver-iscsi-for-windows
+$ git clone https://github.com/taliesins/csi-driver-for-windows-storage-server $GOPATH/src/github.com/taliesins/csi-driver-for-windows-storage-server
 ```
 
 - Build CSI driver
 
 ```console
-$ cd $GOPATH/src/github.com/taliesins/csi-driver-iscsi-for-windows
+$ cd $GOPATH/src/github.com/taliesins/csi-driver-for-windows-storage-server
 $ make
 ```
 
@@ -76,8 +76,8 @@ $ make build
 #### Start CSI driver locally
 
 ```console
-$ cd $GOPATH/src/github.com/taliesins/csi-driver-iscsi-for-windows
-$ ./_output/iscsiplugin --endpoint tcp://127.0.0.1:10000 --nodeid CSINode -v=5 &
+$ cd $GOPATH/src/github.com/taliesins/csi-driver-for-windows-storage-server
+$ ./_output/csiplugin --endpoint tcp://127.0.0.1:10000 --nodeid CSINode -v=5 &
 ```
 
 - Get plugin info

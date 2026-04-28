@@ -44,7 +44,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: nfs
-          image: gcr.io/k8s-staging-sig-storage/iscsiplugin:canary
+          image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true

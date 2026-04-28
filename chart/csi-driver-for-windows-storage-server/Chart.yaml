@@ -1,5 +1,5 @@
 apiVersion: v2
-name: csi-driver-iscsi-for-windows
+name: csi-driver-for-windows-storage-server
 description: A Helm chart for CSI driver iSCSI For Windows
 
 # A chart can be either an 'application' or a 'library' chart.

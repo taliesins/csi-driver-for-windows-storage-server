@@ -1,4 +1,4 @@
-Thank you for installing the csi-driver-iscsi-for-windows Helm chart!
+Thank you for installing the csi-driver-for-windows-storage-server Helm chart!
 
 Your CSI driver has been deployed with:
 - Controller Deployment (cluster-wide volume operations)

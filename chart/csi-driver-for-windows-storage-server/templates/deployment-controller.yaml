@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "csi-driver-iscsi-for-windows.fullname" . }}-controller
+  name: {{ include "csi-driver-for-windows-storage-server.fullname" . }}-controller
   labels:
-    {{- include "csi-driver-iscsi-for-windows.labels" . | nindent 4 }}
+    {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "csi-driver-iscsi-for-windows.selectorLabels" . | nindent 6 }}
+      {{- include "csi-driver-for-windows-storage-server.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "csi-driver-iscsi-for-windows.labels" . | nindent 8 }}
+        {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 8 }}
     spec:
-  serviceAccountName: {{ include "csi-driver-iscsi-for-windows.controllerServiceAccountName" . }}
+  serviceAccountName: {{ include "csi-driver-for-windows-storage-server.controllerServiceAccountName" . }}
       containers:
         - name: controller-driver
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -30,5 +30,5 @@ spec:
       volumes:
         - name: socket-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/csi-driver-iscsi-for-windows
+            path: /var/lib/kubelet/plugins/csi-driver-for-windows-storage-server
             type: DirectoryOrCreate

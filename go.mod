@@ -1,4 +1,4 @@
-module github.com/taliesins/csi-driver-iscsi-for-windows
+module github.com/taliesins/csi-driver-for-windows-storage-server
 
 go 1.26.2
 

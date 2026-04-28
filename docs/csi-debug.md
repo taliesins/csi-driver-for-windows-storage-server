@@ -65,7 +65,7 @@ kubectl edit daemmonset csi-iscsi-for-windows-node
 change below config, e.g.
 
 ```console
-        image: gcr.io/k8s-staging-sig-storage/iscsiplugin:canary
+        image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
         imagePullPolicy: IfNotPresent
 
 ```

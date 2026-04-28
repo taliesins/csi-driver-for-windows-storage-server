@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	iscsilib "github.com/taliesins/csi-driver-iscsi-for-windows/pkg/iscsilib"
+	iscsilib "github.com/taliesins/csi-driver-for-windows-storage-server/pkg/iscsilib"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

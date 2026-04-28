@@ -50,11 +50,11 @@ param(
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string]$StoragePath = "C:\data\taliesins\csi-driver-iscsi-for-windows2\vhdx",
+    [string]$StoragePath = "C:\data\taliesins\csi-driver-for-windows-storage-server\vhdx",
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
-    [string]$SharePath = "C:\data\taliesins\csi-driver-iscsi-for-windows2\shares",
+    [string]$SharePath = "C:\data\taliesins\csi-driver-for-windows-storage-server\shares",
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]

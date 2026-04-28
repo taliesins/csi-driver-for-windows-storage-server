@@ -12,7 +12,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	iscsilib "github.com/taliesins/csi-driver-iscsi-for-windows/pkg/iscsilib"
+	iscsilib "github.com/taliesins/csi-driver-for-windows-storage-server/pkg/iscsilib"
 	mount "k8s.io/mount-utils"
 )
 

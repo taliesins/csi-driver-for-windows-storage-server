@@ -1,5 +1,5 @@
 
-# Project Makefile for csi-driver-iscsi-for-windows
+# Project Makefile for csi-driver-for-windows-storage-server
 
 APP_NAME ?= iscsiplugin
 REGISTRY ?= test

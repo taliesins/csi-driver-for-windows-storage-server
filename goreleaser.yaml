@@ -3,7 +3,7 @@
 version: 2
 
 # Explicitly sets the project name for use in templates.
-project_name: csi-driver-iscsi-for-windows
+project_name: csi-driver-for-windows-storage-server
 
 # This GLOBAL hook runs ONCE before the build starts.
 before:
@@ -15,11 +15,11 @@ before:
         HELM_VERSION=${HELM_VERSION:-{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}}
         HELM_MUTABLE_VERSION=${HELM_MUTABLE_VERSION:-{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}}
         rm -rf ./chart/dist && mkdir -p ./chart/dist
-        helm package ./chart/csi-driver-iscsi-for-windows \
+        helm package ./chart/csi-driver-for-windows-storage-server \
           --destination ./chart/dist \
           --version "$HELM_VERSION" \
           --app-version "$HELM_VERSION"
-        helm package ./chart/csi-driver-iscsi-for-windows \
+        helm package ./chart/csi-driver-for-windows-storage-server \
           --destination ./chart/dist \
           --version "$HELM_MUTABLE_VERSION" \
           --app-version "$HELM_MUTABLE_VERSION"
@@ -27,9 +27,9 @@ before:
 
 # Defines how to build the Go application binaries for multiple platforms.
 builds:
-  - id: csi-driver-iscsi-for-windows
-    binary: csi-driver-iscsi-for-windows
-    main: ./cmd/csi-driver-iscsi-for-windows
+  - id: csi-driver-for-windows-storage-server
+    binary: csi-driver-for-windows-storage-server
+    main: ./cmd/csi-driver-for-windows-storage-server
     goos: ["linux"] # ["linux", "darwin", "windows"]
     goarch: ["amd64", "arm64"]
     goarm64: ["v8.0"]
@@ -55,38 +55,38 @@ archives:
 dockers:
   - id: dockers_linux_amd64
     ids:
-      - csi-driver-iscsi-for-windows
+      - csi-driver-for-windows-storage-server
     use: buildx
     goos: linux
     goarch: amd64
     skip_push: true
     image_templates:
-      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_TAG }}{{ .Env.CONTAINER_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}{{ end }}"
-      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_MUTABLE_TAG }}{{ .Env.CONTAINER_MUTABLE_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}{{ end }}"
+      - "ghcr.io/taliesins/csi-driver-for-windows-storage-server:{{ if .Env.CONTAINER_TAG }}{{ .Env.CONTAINER_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}{{ end }}"
+      - "ghcr.io/taliesins/csi-driver-for-windows-storage-server:{{ if .Env.CONTAINER_MUTABLE_TAG }}{{ .Env.CONTAINER_MUTABLE_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}{{ end }}"
     dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--build-arg=ARTIFACT_PATH=csi-driver-iscsi-for-windows"
+      - "--build-arg=ARTIFACT_PATH=csi-driver-for-windows-storage-server"
 
   # This second 'dockers' block is for the arm64 architecture.
   - id: dockers_linux_arm64
     ids:
-      - csi-driver-iscsi-for-windows
+      - csi-driver-for-windows-storage-server
     use: buildx
     goos: linux
     goarch: arm64
     skip_push: true
     image_templates:
-      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_TAG }}{{ .Env.CONTAINER_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}{{ end }}"
-      - "ghcr.io/taliesins/csi-driver-iscsi-for-windows:{{ if .Env.CONTAINER_MUTABLE_TAG }}{{ .Env.CONTAINER_MUTABLE_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}{{ end }}"
+      - "ghcr.io/taliesins/csi-driver-for-windows-storage-server:{{ if .Env.CONTAINER_TAG }}{{ .Env.CONTAINER_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}{{ .Tag }}{{ end }}{{ end }}"
+      - "ghcr.io/taliesins/csi-driver-for-windows-storage-server:{{ if .Env.CONTAINER_MUTABLE_TAG }}{{ .Env.CONTAINER_MUTABLE_TAG }}{{ else }}{{ if .IsSnapshot }}dev{{ else }}latest{{ end }}{{ end }}"
     dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--build-arg=ARTIFACT_PATH=csi-driver-iscsi-for-windows"
+      - "--build-arg=ARTIFACT_PATH=csi-driver-for-windows-storage-server"
 
 # Scans the Docker images with Trivy before publishing.
 docker_signs:
@@ -106,7 +106,7 @@ snapshot:
 release:
   github:
     owner: taliesins
-    name: csi-driver-iscsi-for-windows
+    name: csi-driver-for-windows-storage-server
   extra_files:
     - glob: ./chart/dist/*.tgz
 

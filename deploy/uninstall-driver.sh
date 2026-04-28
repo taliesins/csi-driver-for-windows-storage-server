@@ -21,7 +21,7 @@ if [[ "$#" -gt 0 ]]; then
   ver="$1"
 fi
 
-repo="https://raw.githubusercontent.com/taliesins/csi-driver-iscsi-for-windows/$ver/deploy"
+repo="https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/$ver/deploy"
 if [[ "$#" -gt 1 ]]; then
   if [[ "$2" == *"local"* ]]; then
     echo "use local deploy"

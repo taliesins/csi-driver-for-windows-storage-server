@@ -1,4 +1,4 @@
-name: csi-driver-iscsi-for-windows
+name: csi-driver-for-windows-server
 
 services:
   devcontainer:

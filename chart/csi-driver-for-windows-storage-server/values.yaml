@@ -14,9 +14,9 @@ node:
     annotations: {}
     name: ""
 
-# Default values for csi-driver-iscsi-for-windows
+# Default values for csi-driver-for-windows-storage-server
 image:
-  repository: ghcr.io/taliesins/csi-driver-iscsi-for-windows
+  repository: ghcr.io/taliesins/csi-driver-for-windows-storage-server
   pullPolicy: IfNotPresent
   tag: ""
 

@@ -5,14 +5,14 @@
 - remote install
 
 ```console
-curl -skSL https://raw.githubusercontent.com/taliesins/csi-driver-iscsi-for-windows/master/deploy/install-driver.sh | bash -s master --
+curl -skSL https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/master/deploy/install-driver.sh | bash -s master --
 ```
 
 - local install
 
 ```console
-git clone https://github.com/taliesins/csi-driver-iscsi-for-windows.git
-cd csi-driver-iscsi-for-windows
+git clone https://github.com/taliesins/csi-driver-for-windows-storage-server.git
+cd csi-driver-for-windows-storage-server
 ./deploy/install-driver.sh master local
 ```
 
@@ -33,5 +33,5 @@ csi-iscsi-for-windows-node-dr4s4                        3/3     Running   0     
 - clean up ISCSI CSI driver
 
 ```console
-curl -skSL https://raw.githubusercontent.com/taliesins/csi-driver-iscsi-for-windows/master/deploy/uninstall-driver.sh | bash -s master --
+curl -skSL https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/master/deploy/uninstall-driver.sh | bash -s master --
 ```
