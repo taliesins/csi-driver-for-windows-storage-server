@@ -242,7 +242,50 @@ kubectl -n kube-system get pod -o wide -l app=csi-for-windows-server-node
 
 ### Install driver on a Kubernetes cluster
 
-- Install by [kubectl](./docs/install-iscsi-csi-driver.md)
+- Install by [kubectl](./docs/install-csi-driver-master.md)
+- Install by [Helm](./docs/install-csi-driver-master.md)
+
+### Install via Helm
+
+The project includes a Helm chart at [`chart/csi-driver-for-windows-storage-server/`](./chart/csi-driver-for-windows-storage-server/).
+
+#### 1. Add the chart to your Helm repository
+
+```sh
+helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --create-namespace
+```
+
+#### 2. Customize values (optional)
+
+Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-server/values.yaml):
+
+```sh
+helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --set image.tag=v0.2.0 \
+  --set image.pullPolicy=Always
+```
+
+#### 3. Verify the installation
+
+```sh
+helm status csi-driver-for-windows-storage-server -n kube-system
+
+kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-windows-storage-server
+```
+
+#### 4. Upgrade / uninstall
+
+```sh
+# Upgrade
+helm upgrade csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system
+
+# Uninstall
+helm uninstall csi-driver-for-windows-storage-server -n kube-system
+```
 
 ### Troubleshooting
 

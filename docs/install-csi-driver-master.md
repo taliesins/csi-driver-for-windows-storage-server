@@ -1,5 +1,44 @@
 # Install ISCSI CSI driver master version on a kubernetes cluster
 
+## Install with Helm
+
+The project includes a Helm chart at [`chart/csi-driver-for-windows-storage-server/`](../chart/csi-driver-for-windows-storage-server/).
+
+```console
+helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --create-namespace
+```
+
+Customize image tag or pull policy:
+
+```console
+helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --set image.tag=v0.2.0 \
+  --set image.pullPolicy=Always
+```
+
+Verify the installation:
+
+```console
+helm status csi-driver-for-windows-storage-server -n kube-system
+kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-windows-storage-server
+```
+
+Upgrade or uninstall:
+
+```console
+# Upgrade
+helm upgrade csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
+  --namespace kube-system
+
+# Uninstall
+helm uninstall csi-driver-for-windows-storage-server -n kube-system
+```
+
+For available values, see [`values.yaml`](../chart/csi-driver-for-windows-storage-server/values.yaml).
+
 ## Install with kubectl
 
 - remote install
