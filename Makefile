@@ -18,13 +18,13 @@ HELM_REGISTRY ?= oci://$(REGISTRY)/taliesins/helm
 all: build
 
 build:
-	go build -o bin/$(APP_NAME) ./cmd/csiplugin
+	go build -mod=mod -o bin/$(APP_NAME) ./cmd/csiplugin
 
 test:
-	go test ./...
+	go test -mod=mod ./...
 
 integration-test:
-	go test -tags integration ./pkg/iscsi
+	go test -mod=mod -tags integration ./pkg/iscsi
 
 image:
 	docker buildx build --platform=$(PLATFORM) -t $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG) .
@@ -55,4 +55,4 @@ pre-commit:
 clean:
 	rm -rf bin/
 	rm -rf $(CHART_OUT)
-	go clean -mod=vendor -r -x
+	go clean -mod=mod -r -x

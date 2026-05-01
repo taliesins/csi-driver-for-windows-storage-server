@@ -26,7 +26,7 @@ func captureDeviceWrites(t *testing.T) *[]writeRecord {
 	originalOpenFile := osOpenFile
 	osOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
 		filePath := filepath.Join(dir, strings.NewReplacer("\\", "_", "/", "_", ":", "_").Replace(name))
-		f, err := os.OpenFile(filePath, flag|os.O_CREATE, perm)
+		f, err := os.OpenFile(filePath, flag|os.O_CREATE, 0o600)
 		if err != nil {
 			return nil, err
 		}

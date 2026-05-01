@@ -24,7 +24,7 @@ COPY pkg ./pkg
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/csiplugin ./cmd/csiplugin
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=mod -trimpath -ldflags="-s -w" -o /out/csiplugin ./cmd/csiplugin
 
 FROM registry.k8s.io/build-image/debian-base:bookworm-v1.0.5
 

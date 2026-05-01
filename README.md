@@ -318,7 +318,7 @@ make chart-package CHART_VERSION=0.1.0 APP_VERSION=dev
 make chart-push CHART_VERSION=0.1.0 APP_VERSION=dev
 ```
 
-For a release, run the `Create Release Tag` workflow. Semantic-release reads the conventional commits since the previous release, calculates the next SemVer version, updates `CHANGELOG.md`, creates the `vX.Y.Z` tag, and opens the GitHub release. The tag push publishes `ghcr.io/taliesins/csi-driver-for-windows-storage-server:X.Y.Z`, `:latest`, and the matching OCI Helm chart.
+For a release, run the `Create Release Tag` workflow. Semantic-release reads the conventional squash-merge commits since the previous release, calculates the next SemVer version, updates `CHANGELOG.md`, creates the `vX.Y.Z` tag, and opens the GitHub release. The tag push publishes `ghcr.io/taliesins/csi-driver-for-windows-storage-server:X.Y.Z`, `:latest`, and the matching OCI Helm chart.
 
 The release workflow expects a `GHCR_PASSWORD` repository secret containing a token that can push commits and tags. This is needed because tags created with the default `GITHUB_TOKEN` do not reliably trigger the follow-on publish workflow.
 
@@ -335,7 +335,7 @@ make chart-lint
 make chart-package CHART_VERSION=0.0.0-dev APP_VERSION=dev
 ```
 
-Commits on the branch should use conventional commit messages, for example:
+Branch commits can be local working commits. The pull request title is the conventional commit that will become the squash-merge commit, for example:
 
 ```text
 feat: Add snapshot support
@@ -343,7 +343,7 @@ fix: Correct iSCSI target cleanup
 docs: Document chart installation
 ```
 
-Semantic-release uses those commit types later to decide the release version:
+Semantic-release uses the squash-merge commit type later to decide the release version:
 
 - `fix:` creates a patch release.
 - `feat:` creates a minor release.
@@ -366,6 +366,8 @@ No container images or Helm charts are published for pull requests.
 
 Merging to `main` runs the same validation and then publishes development artifacts to GHCR:
 
+Use squash merge and keep the squash commit subject the same as the validated PR title. Individual branch commit messages are not linted.
+
 - Container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:dev-<sha>`
 - Mutable container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:dev`
 - Helm chart: `oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server` with version `0.0.0-dev.<sha>`
@@ -377,7 +379,7 @@ These builds are intended for development and integration testing.
 
 Run the `Create Release Tag` workflow. The workflow runs semantic-release on `main`:
 
-- It analyzes conventional commits since the last release tag.
+- It analyzes conventional squash-merge commits since the last release tag.
 - It calculates the next version automatically.
 - It updates `CHANGELOG.md` and `package.json`.
 - It commits the release metadata with `chore(release): X.Y.Z`.

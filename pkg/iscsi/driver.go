@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ var (
 	newBackendFromEnvForRun        = newWinRMBackendFromEnv
 	newNonBlockingGRPCServerForRun = NewNonBlockingGRPCServer
 )
+
+const driverRunDirEnv = "CSI_DRIVER_RUN_DIR"
 
 // Backend is the minimal interface the ControllerServer needs.
 // Implemented by WinRMBackend in backend_winrm.go.
@@ -153,10 +156,6 @@ func newNamedProtocolDriverWithShareBackend(name string, protocol Protocol, file
 	}
 	d.name = name
 
-	if err := os.MkdirAll(fmt.Sprintf("/var/run/%s", name), 0o755); err != nil {
-		klog.Warningf("failed to create driver run directory: %v", err)
-	}
-
 	accessModes := []csi.VolumeCapability_AccessMode_Mode{
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
@@ -235,6 +234,8 @@ func NewControllerServer(d *driver) *ControllerServer {
 }
 
 func (d *driver) Run() {
+	d.ensureRunDirectory()
+
 	// Build backend from environment and attach it.
 	b, err := newBackendFromEnvForRun()
 	if err != nil {
@@ -248,6 +249,17 @@ func (d *driver) Run() {
 		NewControllerServer(d),
 		NewNodeServer(d))
 	s.Wait()
+}
+
+func (d *driver) ensureRunDirectory() {
+	baseDir := strings.TrimSpace(os.Getenv(driverRunDirEnv))
+	if baseDir == "" {
+		baseDir = "/var/run"
+	}
+
+	if err := os.MkdirAll(filepath.Join(baseDir, d.name), 0o755); err != nil {
+		klog.Warningf("failed to create driver run directory: %v", err)
+	}
 }
 
 func (d *driver) AddVolumeCapabilityAccessModes(vc []csi.VolumeCapability_AccessMode_Mode) []*csi.VolumeCapability_AccessMode {
