@@ -13,7 +13,7 @@ spec:
       labels:
         {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 8 }}
     spec:
-  serviceAccountName: {{ include "csi-driver-for-windows-storage-server.nodeServiceAccountName" . }}
+      serviceAccountName: {{ include "csi-driver-for-windows-storage-server.nodeServiceAccountName" . }}
       containers:
         - name: node-driver
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

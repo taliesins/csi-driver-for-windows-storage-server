@@ -2,7 +2,7 @@ name: Cleanup Artifacts
 
 on:
   schedule:
-    - cron: '0 0 * * *' # Daily at midnight UTC
+    - cron: '0 0 * * *'
   delete:
   push:
     branches:
@@ -10,74 +10,92 @@ on:
       - 'pr/**'
   workflow_dispatch:
 
-env:
-  PACKAGE_NAME: csi-driver-for-windows-server
-  PR_TAG_PREFIX: 0.0.0-pr-
-  DEV_TAG_PREFIX: dev-
-
 jobs:
   cleanup-container:
     runs-on: ubuntu-latest
     permissions:
-      packages: write
       contents: read
-
+      packages: write
     steps:
-      - name: Delete container images for PRs, old main builds, and untagged
-        uses: actions/github-script@v7
+      - name: Delete PR images, old dev builds, and untagged container versions
+        uses: actions/github-script@v9.0.0
         with:
           script: |
-            const packageName = process.env.PACKAGE_NAME;
-            const prTagPrefix = process.env.PR_TAG_PREFIX;
-            const devTagPrefix = process.env.DEV_TAG_PREFIX;
-            const branchName = context.payload?.ref?.replace(/^refs\/heads\//, '').replace(/\//g, '-');
+            const owner = context.repo.owner;
+            const ownerType = context.payload.repository.owner.type;
+            const packageName = 'csi-driver-for-windows-storage-server';
+            const prTagPrefix = 'pr-';
+            const devTagPrefix = 'dev-';
+
+            const getVersions = async (targetPackage) => {
+              const params = {
+                package_type: 'container',
+                package_name: targetPackage,
+                per_page: 100,
+              };
+
+              const method = ownerType === 'User'
+                ? github.rest.packages.getAllPackageVersionsForPackageOwnedByUser
+                : github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg;
+
+              if (ownerType === 'User') {
+                params.username = owner;
+              } else {
+                params.org = owner;
+              }
+
+              const { data } = await method(params);
+              return data;
+            };
+
+            const deleteVersion = async (targetPackage, versionId) => {
+              const params = {
+                package_type: 'container',
+                package_name: targetPackage,
+                package_version_id: versionId,
+              };
+
+              const method = ownerType === 'User'
+                ? github.rest.packages.deletePackageVersionForUser
+                : github.rest.packages.deletePackageVersionForOrg;
+
+              if (ownerType === 'User') {
+                params.username = owner;
+              } else {
+                params.org = owner;
+              }
+
+              await method(params);
+            };
 
             try {
-              const versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
-                package_type: 'container',
-                package_name: packageName,
-                org: context.repo.owner
-              });
+              const versions = await getVersions(packageName);
+              const devBuilds = [];
 
-              const mainBuilds = [];
-
-              for (const v of versions.data) {
-                const tags = v.metadata?.container?.tags || [];
-
-                const isTaggedRelease = tags.some(t => /^v\d+\.\d+\.\d+$/.test(t));
-                const isMainDev = tags.some(t => t.startsWith(devTagPrefix));
-                const isPR = branchName
-                  ? tags.some(t => t.includes(branchName) || t.startsWith(prTagPrefix))
-                  : tags.some(t => t.startsWith(prTagPrefix));
+              for (const version of versions) {
+                const tags = version.metadata?.container?.tags || [];
+                const isTaggedRelease = tags.some((tag) => /^\d+\.\d+\.\d+/.test(tag) || tag === 'latest');
+                const isDevBuild = tags.some((tag) => tag.startsWith(devTagPrefix));
+                const isPrBuild = tags.some((tag) => tag.startsWith(prTagPrefix));
                 const isUntagged = tags.length === 0;
 
-                if (!isTaggedRelease && (isPR || isUntagged)) {
-                  console.log(`Deleting container version ${v.id} (tags: ${tags.join(', ') || 'untagged'})`);
-                  await github.rest.packages.deletePackageVersionForOrg({
-                    package_type: 'container',
-                    package_name: packageName,
-                    org: context.repo.owner,
-                    package_version_id: v.id
-                  });
-                } else if (isMainDev) {
-                  mainBuilds.push(v);
+                if (!isTaggedRelease && (isPrBuild || isUntagged)) {
+                  core.info(`Deleting container version ${version.id} (${tags.join(', ') || 'untagged'})`);
+                  await deleteVersion(packageName, version.id);
+                } else if (isDevBuild) {
+                  devBuilds.push(version);
                 }
               }
 
-              mainBuilds.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-              const oldMain = mainBuilds.slice(5);
-              for (const v of oldMain) {
-                console.log(`Deleting old main container build ${v.id}`);
-                await github.rest.packages.deletePackageVersionForOrg({
-                  package_type: 'container',
-                  package_name: packageName,
-                  org: context.repo.owner,
-                  package_version_id: v.id
-                });
+              devBuilds.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+
+              for (const version of devBuilds.slice(5)) {
+                core.info(`Deleting old dev container build ${version.id}`);
+                await deleteVersion(packageName, version.id);
               }
             } catch (error) {
               if (error.status === 404) {
-                console.log(`Container package not found: ${error.message}`);
+                core.info(`Container package '${packageName}' was not found: ${error.message}`);
               } else {
                 throw error;
               }
@@ -86,65 +104,87 @@ jobs:
   cleanup-helm:
     runs-on: ubuntu-latest
     permissions:
-      packages: write
       contents: read
-
+      packages: write
     steps:
-      - name: Delete Helm charts for PRs, old main builds, and untagged
-        uses: actions/github-script@v7
+      - name: Delete PR charts and old dev Helm package versions
+        uses: actions/github-script@v9.0.0
         with:
           script: |
-            const packageName = process.env.PACKAGE_NAME;
-            const prTagPrefix = process.env.PR_TAG_PREFIX;
-            const devTagPrefix = process.env.DEV_TAG_PREFIX;
-            const branchName = context.payload?.ref?.replace(/^refs\/heads\//, '').replace(/\//g, '-');
+            const owner = context.repo.owner;
+            const ownerType = context.payload.repository.owner.type;
+            const packageName = 'helm/csi-driver-for-windows-storage-server';
+            const prTagPrefix = '0.0.0-pr';
+            const devTagPrefix = '0.0.0-dev';
+
+            const getVersions = async (targetPackage) => {
+              const params = {
+                package_type: 'container',
+                package_name: targetPackage,
+                per_page: 100,
+              };
+
+              const method = ownerType === 'User'
+                ? github.rest.packages.getAllPackageVersionsForPackageOwnedByUser
+                : github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg;
+
+              if (ownerType === 'User') {
+                params.username = owner;
+              } else {
+                params.org = owner;
+              }
+
+              const { data } = await method(params);
+              return data;
+            };
+
+            const deleteVersion = async (targetPackage, versionId) => {
+              const params = {
+                package_type: 'container',
+                package_name: targetPackage,
+                package_version_id: versionId,
+              };
+
+              const method = ownerType === 'User'
+                ? github.rest.packages.deletePackageVersionForUser
+                : github.rest.packages.deletePackageVersionForOrg;
+
+              if (ownerType === 'User') {
+                params.username = owner;
+              } else {
+                params.org = owner;
+              }
+
+              await method(params);
+            };
 
             try {
-              const versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
-                package_type: 'container',
-                package_name: packageName,
-                org: context.repo.owner
-              });
+              const versions = await getVersions(packageName);
+              const devBuilds = [];
 
-              const mainBuilds = [];
+              for (const version of versions) {
+                const tags = version.metadata?.container?.tags || [];
+                const isTaggedRelease = tags.some((tag) => /^\d+\.\d+\.\d+/.test(tag));
+                const isDevBuild = tags.some((tag) => tag.startsWith(devTagPrefix));
+                const isPrBuild = tags.some((tag) => tag.startsWith(prTagPrefix));
 
-              for (const v of versions.data) {
-                const tags = v.metadata?.container?.tags || [];
-
-                const isTaggedRelease = tags.some(t => /^v\d+\.\d+\.\d+$/.test(t));
-                const isMainDev = tags.some(t => t.startsWith(devTagPrefix));
-                const isPR = branchName
-                  ? tags.some(t => t.includes(branchName) || t.startsWith(prTagPrefix))
-                  : tags.some(t => t.startsWith(prTagPrefix));
-                const isUntagged = tags.length === 0;
-
-                if (!isTaggedRelease && (isPR || isUntagged)) {
-                  console.log(`Deleting helm chart version ${v.id} (tags: ${tags.join(', ') || 'untagged'})`);
-                  await github.rest.packages.deletePackageVersionForOrg({
-                    package_type: 'container',
-                    package_name: packageName,
-                    org: context.repo.owner,
-                    package_version_id: v.id
-                  });
-                } else if (isMainDev) {
-                  mainBuilds.push(v);
+                if (!isTaggedRelease && isPrBuild) {
+                  core.info(`Deleting PR Helm chart version ${version.id} (${tags.join(', ')})`);
+                  await deleteVersion(packageName, version.id);
+                } else if (isDevBuild) {
+                  devBuilds.push(version);
                 }
               }
 
-              mainBuilds.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
-              const oldMain = mainBuilds.slice(5);
-              for (const v of oldMain) {
-                console.log(`Deleting old main helm chart ${v.id}`);
-                await github.rest.packages.deletePackageVersionForOrg({
-                  package_type: 'container',
-                  package_name: packageName,
-                  org: context.repo.owner,
-                  package_version_id: v.id
-                });
+              devBuilds.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+
+              for (const version of devBuilds.slice(5)) {
+                core.info(`Deleting old dev Helm chart version ${version.id}`);
+                await deleteVersion(packageName, version.id);
               }
             } catch (error) {
               if (error.status === 404) {
-                console.log(`Helm chart package not found: ${error.message}`);
+                core.info(`Helm chart package '${packageName}' was not found: ${error.message}`);
               } else {
                 throw error;
               }

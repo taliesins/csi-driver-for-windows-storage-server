@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -413,6 +414,7 @@ func (f *fakeNonBlockingGRPCServer) ForceStop() {}
 func TestDriverRunWiresBackendAndServers(t *testing.T) {
 	backend := &mockBackend{}
 	fakeServer := &fakeNonBlockingGRPCServer{}
+	t.Setenv(driverRunDirEnv, t.TempDir())
 
 	originalBackendFromEnv := newBackendFromEnvForRun
 	originalServerFactory := newNonBlockingGRPCServerForRun
@@ -436,6 +438,18 @@ func TestDriverRunWiresBackendAndServers(t *testing.T) {
 	assert.IsType(t, &IdentityServer{}, fakeServer.ids)
 	assert.IsType(t, &ControllerServer{}, fakeServer.cs)
 	assert.IsType(t, &nodeServer{}, fakeServer.ns)
+}
+
+func TestDriverRunDirectoryUsesConfiguredBaseDir(t *testing.T) {
+	runDir := t.TempDir()
+	t.Setenv(driverRunDirEnv, runDir)
+
+	d := NewNamedDriver("nfs.csi.windows.microsoft.com", "node-001", "tcp://127.0.0.1:10000")
+	d.ensureRunDirectory()
+
+	info, err := os.Stat(filepath.Join(runDir, "nfs.csi.windows.microsoft.com"))
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
 }
 
 // ---------------------------------------------------------------------------

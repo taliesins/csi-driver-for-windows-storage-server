@@ -10,12 +10,13 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - uses: amannn/action-semantic-pull-request@v5
+      - uses: amannn/action-semantic-pull-request@v6.1.1
         with:
           types: |
             feat
             fix
             chore
+            ci
             docs
             refactor
             test
@@ -24,7 +25,7 @@ jobs:
           subjectPattern: ^((bump)|[A-Z]).+$
           subjectPatternError: |
             The PR title must follow the conventional commits format (e.g., 'feat: Add new feature', 'fix: Resolve bug').
-            Allowed types: feat, fix, chore, docs, refactor, test, style, perf.
+            Allowed types: feat, fix, chore, ci, docs, refactor, test, style, perf.
             The subject must start with a capital letter.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

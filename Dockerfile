@@ -12,11 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+FROM golang:1.26.2-bookworm AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY pkg ./pkg
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=mod -trimpath -ldflags="-s -w" -o /out/csiplugin ./cmd/csiplugin
+
 FROM registry.k8s.io/build-image/debian-base:bookworm-v1.0.5
 
 RUN apt-get update && apt-get upgrade -y && apt-mark unhold libcap2 && clean-install util-linux e2fsprogs mount ca-certificates udev xfsprogs btrfs-progs open-iscsi && rm -rf /var/lib/apt/lists/*
 
 CMD ["service", "iscsid", "start"]
-COPY ./bin/csiplugin /csiplugin
+COPY --from=builder /out/csiplugin /csiplugin
 
 ENTRYPOINT ["/csiplugin"]

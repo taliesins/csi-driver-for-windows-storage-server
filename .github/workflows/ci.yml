@@ -10,77 +10,45 @@ on:
       - '**.go'
       - 'go.mod'
       - 'go.sum'
+      - 'Makefile'
+      - 'package.json'
+      - 'bun.lock'
+      - 'release.config.cjs'
       - 'Dockerfile'
-      - '.goreleaser.yml'
+      - 'goreleaser.yaml'
+      - '.goreleaser.yaml'
       - 'chart/**'
       - '.pre-commit-config.yaml'
+      - '.github/workflows/**'
   pull_request:
-    paths:
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Dockerfile'
-      - '.goreleaser.yml'
-      - 'chart/**'
-      - '.pre-commit-config.yaml'
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: taliesins/csi-driver-for-windows-server
+  IMAGE_NAME: taliesins/csi-driver-for-windows-storage-server
+  CHART_NAME: csi-driver-for-windows-storage-server
+  CHART_PATH: chart/csi-driver-for-windows-storage-server
+  GOFLAGS: -mod=mod
 
 jobs:
-  lint:
+  check-and-build:
     if: |
       !startsWith(github.ref, 'refs/tags/v') &&
       !(
+        github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
         startsWith(github.event.head_commit.message, 'chore(release):')
       )
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6.4.0
         with:
           go-version: '1.26.2'
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11.3'
-
-      - name: Install yamllint
-        run: pip install yamllint=='1.29.0'
-
-      - name: Install shfmt
-        env:
-          SHFMT_VERSION: v3.8.0
-        run: |
-          sudo wget -O /usr/local/bin/shfmt "https://github.com/mvdan/sh/releases/download/${{ env.SHFMT_VERSION }}/shfmt_${{ env.SHFMT_VERSION }}_linux_amd64"
-          sudo chmod +x /usr/local/bin/shfmt
-
-      - name: Install shellcheck
-        env:
-          SHELLCHECK_VERSION: stable
-        run: |
-          sudo wget -qO- "https://github.com/koalaman/shellcheck/releases/download/${{ env.SHELLCHECK_VERSION }}/shellcheck-${{ env.SHELLCHECK_VERSION }}.linux.x86_64.tar.xz" | sudo tar -xJ -C /usr/local/bin --strip-components=1 shellcheck-${{ env.SHELLCHECK_VERSION }}/shellcheck
-
-      - name: Install hadolint
-        env:
-          HADOLINT_VERSION: v2.12.0
-        run: |
-          wget -O /usr/local/bin/hadolint "https://github.com/hadolint/hadolint/releases/download/${{ env.HADOLINT_VERSION }}/hadolint-Linux-x86_64"
-          sudo chmod +x /usr/local/bin/hadolint
-
-      - name: Install golangci-lint
-        env:
-          GOLANGCI_LINT_VERSION: v2.2.1
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin ${{ env.GOLANGCI_LINT_VERSION }}
-
       - name: Cache Go modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5.0.5
         with:
           path: |
             ~/.cache/go-build
@@ -89,157 +57,188 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
-      - name: Install goimports
-        env:
-          GOIMPORTS_VERSION: v0.44.0
-        run: go install golang.org/x/tools/cmd/goimports@${{ env.GOIMPORTS_VERSION }}
-
-      - name: Cache pre-commit
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit|${{ runner.os }}|${{ hashFiles('.pre-commit-config.yaml') }}
-
-      - name: Run pre-commit
-        uses: pre-commit/action@v3.0.1
-
-  unit-tests:
-    if: |
-      !failure() &&
-      !cancelled() &&
-      !startsWith(github.ref, 'refs/tags/v') &&
-      !(
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-        startsWith(github.event.head_commit.message, 'chore(release):')
-      )
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.2'
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
       - name: Run Go tests
-        run: go test -v ./...
-
-  build-and-release:
-    if: |
-      !failure() &&
-      !cancelled() &&
-      !(
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-        startsWith(github.event.head_commit.message, 'chore(release):')
-      )
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    permissions:
-      contents: write
-      packages: write
-      id-token: write # Required for keyless signing
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.2'
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: v3.18.3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        run: go test ./...
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.0.0
 
-      - name: Log in to GitHub Container Registry for Docker
-        uses: docker/login-action@v3
+      - name: Build Docker image
+        uses: docker/build-push-action@v7.1.0
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.70.0
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci
+          scanners: vuln
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          hide-progress: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Lint chart
+        run: helm lint ${{ env.CHART_PATH }}
+
+  build-and-push:
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      (
+        startsWith(github.ref, 'refs/tags/v') ||
+        needs.check-and-build.result == 'success'
+      )
+    needs: check-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.0.0
+
+      - name: Determine versions
+        id: versions
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          CHART_NAME: ${{ env.CHART_NAME }}
+        run: |
+          set -euo pipefail
+
+          IMAGE_REF="${REGISTRY}/${IMAGE_NAME}"
+          HELM_REGISTRY="${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/helm"
+          SHORT_SHA="${GITHUB_SHA::7}"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+            CONTAINER_TAGS="${IMAGE_REF}:${TAG_VERSION}"$'\n'"${IMAGE_REF}:latest"
+            SCAN_TAG="${IMAGE_REF}:${TAG_VERSION}"
+            HELM_VERSION="${TAG_VERSION}"
+            HELM_MUTABLE_VERSION=""
+            CHART_APP_VERSION="${TAG_VERSION}"
+            CHART_MUTABLE_APP_VERSION=""
+          else
+            CONTAINER_TAGS="${IMAGE_REF}:dev-${SHORT_SHA}"$'\n'"${IMAGE_REF}:dev"
+            SCAN_TAG="${IMAGE_REF}:dev-${SHORT_SHA}"
+            HELM_VERSION="0.0.0-dev.${SHORT_SHA}"
+            HELM_MUTABLE_VERSION="0.0.0-dev"
+            CHART_APP_VERSION="dev-${SHORT_SHA}"
+            CHART_MUTABLE_APP_VERSION="dev"
+          fi
+
+          {
+            echo "container_tags<<EOF"
+            echo "${CONTAINER_TAGS}"
+            echo "EOF"
+            echo "helm_registry=${HELM_REGISTRY}"
+            echo "scan_tag=${SCAN_TAG}"
+            echo "helm_version=${HELM_VERSION}"
+            echo "helm_mutable_version=${HELM_MUTABLE_VERSION}"
+            echo "chart_app_version=${CHART_APP_VERSION}"
+            echo "chart_mutable_app_version=${CHART_MUTABLE_APP_VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to GitHub Container Registry for Helm
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Build Docker image for scanning
+        uses: docker/build-push-action@v7.1.0
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.versions.outputs.container_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Determine Versions
-        id: get_version
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          version: v0.70.0
+          image-ref: ${{ steps.versions.outputs.scan_tag }}
+          scanners: vuln
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          hide-progress: true
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7.1.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.versions.outputs.container_tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Package Helm charts
+        env:
+          CHART_PATH: ${{ env.CHART_PATH }}
+          HELM_VERSION: ${{ steps.versions.outputs.helm_version }}
+          HELM_MUTABLE_VERSION: ${{ steps.versions.outputs.helm_mutable_version }}
+          CHART_APP_VERSION: ${{ steps.versions.outputs.chart_app_version }}
+          CHART_MUTABLE_APP_VERSION: ${{ steps.versions.outputs.chart_mutable_app_version }}
         run: |
-          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-            echo "CONTAINER_TAG=${TAG_VERSION}" >> $GITHUB_ENV
-            echo "CONTAINER_MUTABLE_TAG=latest" >> $GITHUB_ENV
-            echo "HELM_VERSION=${TAG_VERSION}" >> $GITHUB_ENV
-            echo "HELM_MUTABLE_VERSION=latest" >> $GITHUB_ENV
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-            echo "CONTAINER_TAG=pr-${PR_NUMBER}.${SHORT_SHA}" >> $GITHUB_ENV
-            echo "CONTAINER_MUTABLE_TAG=pr-${PR_NUMBER}" >> $GITHUB_ENV
-            echo "HELM_VERSION=0.0.0-pr${PR_NUMBER}.${SHORT_SHA}" >> $GITHUB_ENV
-            echo "HELM_MUTABLE_VERSION=0.0.0-pr${PR_NUMBER}" >> $GITHUB_ENV
-          else
-            echo "CONTAINER_TAG=dev-${SHORT_SHA}" >> $GITHUB_ENV
-            echo "CONTAINER_MUTABLE_TAG=dev" >> $GITHUB_ENV
-            echo "HELM_VERSION=0.0.0-dev.${SHORT_SHA}" >> $GITHUB_ENV
-            echo "HELM_MUTABLE_VERSION=0.0.0-dev" >> $GITHUB_ENV
+          set -euo pipefail
+
+          rm -rf chart-out
+          mkdir -p chart-out
+
+          package_chart() {
+            local version="$1"
+            local app_version="$2"
+
+            helm package "${CHART_PATH}" \
+              --destination chart-out \
+              --version "${version}" \
+              --app-version "${app_version}"
+          }
+
+          package_chart "${HELM_VERSION}" "${CHART_APP_VERSION}"
+
+          if [[ -n "${HELM_MUTABLE_VERSION}" ]]; then
+            package_chart "${HELM_MUTABLE_VERSION}" "${CHART_MUTABLE_APP_VERSION}"
           fi
 
-      - name: Run GoReleaser in snapshot mode
-        if: "!startsWith(github.ref, 'refs/tags/v')"
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          version: v2.10.2
-          args: release --clean --snapshot
+      - name: Log in to Helm registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+
+      - name: Push Helm charts
         env:
-          CONTAINER_TAG: ${{ env.CONTAINER_TAG }}
-          CONTAINER_MUTABLE_TAG: ${{ env.CONTAINER_MUTABLE_TAG }}
-          HELM_VERSION: ${{ env.HELM_VERSION }}
-          HELM_MUTABLE_VERSION: ${{ env.HELM_MUTABLE_VERSION }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run GoReleaser in release mode
-        if: "startsWith(github.ref, 'refs/tags/v')"
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          version: v2.10.2
-          args: release --clean
-        env:
-          CONTAINER_TAG: ${{ env.CONTAINER_TAG }}
-          CONTAINER_MUTABLE_TAG: ${{ env.CONTAINER_MUTABLE_TAG }}
-          HELM_VERSION: ${{ env.HELM_VERSION }}
-          HELM_MUTABLE_VERSION: ${{ env.HELM_MUTABLE_VERSION }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push Container Images to Registry
-        if: success()
+          HELM_REGISTRY: ${{ steps.versions.outputs.helm_registry }}
         run: |
-          docker buildx build \
-            --platform linux/amd64,linux/arm64 \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CONTAINER_TAG }}" \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.CONTAINER_MUTABLE_TAG }}" \
-            --push \
-            .
+          set -euo pipefail
 
-      - name: Push Helm Charts to OCI Registry
-        if: success()
-        run: |
-          for chart in ./chart/dist/*.tgz; do
-            helm push "$chart" oci://ghcr.io/taliesins/helm
+          for chart in chart-out/*.tgz; do
+            helm push "${chart}" "oci://${HELM_REGISTRY}"
           done
