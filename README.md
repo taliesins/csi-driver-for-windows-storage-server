@@ -274,7 +274,7 @@ Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-s
 helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system \
   --create-namespace \
-  --set image.tag=v0.2.0 \
+  --set image.tag=0.2.0 \
   --set image.pullPolicy=Always
 ```
 
@@ -305,6 +305,100 @@ For development or air-gapped environments, you can install from the local chart
 helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
   --namespace kube-system \
   --create-namespace
+```
+
+### Build and publish
+
+CI builds and validates pull requests, publishes `dev-<sha>` and `dev` container/chart builds from `main`, and publishes release containers/charts from `v*` tags.
+
+```sh
+make image IMAGE_TAG=dev
+make image-push IMAGE_TAG=dev
+make chart-package CHART_VERSION=0.1.0 APP_VERSION=dev
+make chart-push CHART_VERSION=0.1.0 APP_VERSION=dev
+```
+
+For a release, run the `Create Release Tag` workflow. Semantic-release reads the conventional commits since the previous release, calculates the next SemVer version, updates `CHANGELOG.md`, creates the `vX.Y.Z` tag, and opens the GitHub release. The tag push publishes `ghcr.io/taliesins/csi-driver-for-windows-storage-server:X.Y.Z`, `:latest`, and the matching OCI Helm chart.
+
+The release workflow expects a `GHCR_PASSWORD` repository secret containing a token that can push commits and tags. This is needed because tags created with the default `GITHUB_TOKEN` do not reliably trigger the follow-on publish workflow.
+
+### Build and release lifecycle
+
+#### 1. Branch created
+
+Creating a branch does not publish anything by itself. Use the local targets while developing:
+
+```sh
+make test
+make image IMAGE_TAG=dev
+make chart-lint
+make chart-package CHART_VERSION=0.0.0-dev APP_VERSION=dev
+```
+
+Commits on the branch should use conventional commit messages, for example:
+
+```text
+feat: Add snapshot support
+fix: Correct iSCSI target cleanup
+docs: Document chart installation
+```
+
+Semantic-release uses those commit types later to decide the release version:
+
+- `fix:` creates a patch release.
+- `feat:` creates a minor release.
+- `BREAKING CHANGE:` in the commit body, or `!` after the type such as `feat!:`, creates a major release.
+- Other types such as `docs:`, `test:`, `refactor:`, and `chore:` appear in history but do not create a release by themselves.
+
+#### 2. Pull request created
+
+Opening or updating a pull request runs conventional PR title validation and CI validation only. The workflow:
+
+- Checks that the PR title follows the conventional commit format.
+- Runs the Go test suite.
+- Builds the Docker image without pushing it.
+- Scans the image with Trivy.
+- Lints the Helm chart.
+
+No container images or Helm charts are published for pull requests.
+
+#### 3. Merged into main
+
+Merging to `main` runs the same validation and then publishes development artifacts to GHCR:
+
+- Container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:dev-<sha>`
+- Mutable container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:dev`
+- Helm chart: `oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server` with version `0.0.0-dev.<sha>`
+- Mutable Helm chart: same OCI chart with version `0.0.0-dev`
+
+These builds are intended for development and integration testing.
+
+#### 4. Release tag created
+
+Run the `Create Release Tag` workflow. The workflow runs semantic-release on `main`:
+
+- It analyzes conventional commits since the last release tag.
+- It calculates the next version automatically.
+- It updates `CHANGELOG.md` and `package.json`.
+- It commits the release metadata with `chore(release): X.Y.Z`.
+- It creates and pushes the `vX.Y.Z` tag.
+- It creates the GitHub release notes.
+
+The tag push triggers the publish job.
+
+The release publish creates:
+
+- Container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0`
+- Mutable release image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:latest`
+- Helm chart: `oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server` with version `0.2.0`
+
+Install a released chart with:
+
+```sh
+helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --create-namespace \
+  --version 0.2.0
 ```
 
 ### Troubleshooting
