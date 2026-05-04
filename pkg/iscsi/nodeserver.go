@@ -21,6 +21,9 @@ import (
 var (
 	iscsilibConnect      = func(c *iscsilib.Connector) (string, error) { return c.Connect() }
 	getConnectorFromFile = iscsilib.GetConnectorFromFile
+	formatAndMount       = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
+		return m.FormatAndMount(source, target, fsType, options)
+	}
 	iscsilibExpandVolume = func(m mount.Interface, resizer iscsilib.Resizer, volumePath string) error {
 		return iscsilib.ExpandVolume(m, resizer, volumePath)
 	}
@@ -58,6 +61,16 @@ func (ns *nodeServer) init() error {
 func getStr(m map[string]string, k string) (string, bool) {
 	v, ok := m[k]
 	return strings.TrimSpace(v), ok && strings.TrimSpace(v) != ""
+}
+
+func fsTypeFromCapability(vc *csi.VolumeCapability) string {
+	if vc == nil {
+		return ""
+	}
+	if mount := vc.GetMount(); mount != nil {
+		return strings.TrimSpace(mount.GetFsType())
+	}
+	return ""
 }
 
 func isBlockDevice(p string) (bool, error) {
@@ -160,9 +173,10 @@ func (ns *nodeServer) parseStage(req *csi.NodeStageVolumeRequest) (portal, iqn s
 	}
 	lun = li
 
+	fsType = fsTypeFromCapability(req.GetVolumeCapability())
 	vc := req.GetVolumeContext()
 	if vc != nil {
-		if v, ok := getStr(vc, "fsType"); ok {
+		if v, ok := getStr(vc, "fsType"); ok && fsType == "" {
 			fsType = v
 		}
 		if v, ok := getStr(vc, "mountOptions"); ok {
@@ -218,9 +232,10 @@ func (ns *nodeServer) parsePublish(req *csi.NodePublishVolumeRequest) (portal, i
 	}
 	lun = li
 
+	fsType = fsTypeFromCapability(req.GetVolumeCapability())
 	vc := req.GetVolumeContext()
 	if vc != nil {
-		if v, ok := getStr(vc, "fsType"); ok {
+		if v, ok := getStr(vc, "fsType"); ok && fsType == "" {
 			fsType = v
 		}
 		if v, ok := getStr(vc, "mountOptions"); ok {
@@ -430,7 +445,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		return nil, status.Errorf(codes.Internal, "mkdir staging: %v", err)
 	}
 	if notMnt {
-		if err := ns.mounter.FormatAndMount(device, req.GetStagingTargetPath(), fsType, mountOpts); err != nil {
+		if err := formatAndMount(ns.mounter, device, req.GetStagingTargetPath(), fsType, mountOpts); err != nil {
 			return nil, status.Errorf(codes.Internal, "format+mount staging failed: %v", err)
 		}
 	}
@@ -555,7 +570,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 					return nil, status.Errorf(codes.Internal, "recover staging path: %v", err)
 				}
 			}
-			if err := ns.mounter.FormatAndMount(device, staging, fsType, mountOpts); err != nil {
+			if err := formatAndMount(ns.mounter, device, staging, fsType, mountOpts); err != nil {
 				return nil, status.Errorf(codes.Internal, "format+mount staging fallback failed: %v", err)
 			}
 		}

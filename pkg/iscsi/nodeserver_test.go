@@ -226,6 +226,96 @@ func TestNodeStageVolume_BlockVolume(t *testing.T) {
 	assert.Empty(t, mockMount.formatAndMounts)
 }
 
+func TestNodeStageVolume_FilesystemFsType(t *testing.T) {
+	tests := []struct {
+		name             string
+		capabilityFsType string
+		volumeContext    map[string]string
+		wantFsType       string
+		wantOptions      []string
+	}{
+		{
+			name:             "uses CSI mount fs type",
+			capabilityFsType: "xfs",
+			volumeContext:    map[string]string{"mountOptions": "discard,noatime"},
+			wantFsType:       "xfs",
+			wantOptions:      []string{"discard", "noatime"},
+		},
+		{
+			name:             "trims CSI mount fs type",
+			capabilityFsType: " xfs ",
+			wantFsType:       "xfs",
+		},
+		{
+			name:          "falls back to volume context fs type",
+			volumeContext: map[string]string{"fsType": "xfs"},
+			wantFsType:    "xfs",
+		},
+		{
+			name:             "prefers CSI mount fs type over volume context",
+			capabilityFsType: "xfs",
+			volumeContext:    map[string]string{"fsType": "ext4"},
+			wantFsType:       "xfs",
+		},
+		{
+			name:       "defaults to ext4",
+			wantFsType: "ext4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ns, _, _ := newTestNodeServer(t)
+			stagingTargetPath := t.TempDir()
+
+			originalConnect := iscsilibConnect
+			iscsilibConnect = func(c *iscsilib.Connector) (string, error) {
+				c.MountTargetDevice = &iscsilib.Device{Name: "sdb", Type: "disk"}
+				return "/dev/sdb", nil
+			}
+			t.Cleanup(func() { iscsilibConnect = originalConnect })
+
+			var gotSource, gotTarget, gotFsType string
+			var gotOptions []string
+			originalFormatAndMount := formatAndMount
+			formatAndMount = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
+				gotSource = source
+				gotTarget = target
+				gotFsType = fsType
+				gotOptions = append([]string(nil), options...)
+				return nil
+			}
+			t.Cleanup(func() { formatAndMount = originalFormatAndMount })
+
+			resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "test-vol",
+				StagingTargetPath: stagingTargetPath,
+				VolumeCapability: &csi.VolumeCapability{
+					AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+					AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{
+						FsType: tt.capabilityFsType,
+					}},
+				},
+				PublishContext: map[string]string{
+					"targetPortal": "10.0.0.1:3260",
+					"iqn":          "iqn.2024-01.com.example:test-volume",
+					"lun":          "0",
+				},
+				VolumeContext: tt.volumeContext,
+			})
+
+			require.NoError(t, err)
+			assert.NotNil(t, resp)
+			assert.Equal(t, "/dev/sdb", gotSource)
+			assert.Equal(t, stagingTargetPath, gotTarget)
+			assert.Equal(t, tt.wantFsType, gotFsType)
+			for _, opt := range tt.wantOptions {
+				assert.Contains(t, gotOptions, opt)
+			}
+		})
+	}
+}
+
 func TestNodeStageVolume_NFS(t *testing.T) {
 	ns, _, mockMount := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
@@ -546,6 +636,57 @@ func TestNodePublishVolume_ReadOnly(t *testing.T) {
 	assert.Equal(t, targetPath, mockMount.formatAndMounts[0].target)
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "bind")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "ro")
+}
+
+func TestNodePublishVolume_RecoverStagingUsesVolumeCapabilityFsType(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	targetPath := t.TempDir()
+	conn := &iscsilib.Connector{
+		MountTargetDevice: &iscsilib.Device{Name: "sdb", Type: "disk"},
+	}
+
+	originalGetConnector := getConnectorFromFile
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		assert.Equal(t, stageConnectorFile(stagingTargetPath), filePath)
+		return conn, nil
+	}
+	t.Cleanup(func() { getConnectorFromFile = originalGetConnector })
+
+	var gotSource, gotTarget, gotFsType string
+	originalFormatAndMount := formatAndMount
+	formatAndMount = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
+		gotSource = source
+		gotTarget = target
+		gotFsType = fsType
+		return nil
+	}
+	t.Cleanup(func() { formatAndMount = originalFormatAndMount })
+
+	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "test-vol",
+		TargetPath:        targetPath,
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, conn.MountTargetDevice.GetPath(), gotSource)
+	assert.Equal(t, stagingTargetPath, gotTarget)
+	assert.Equal(t, "xfs", gotFsType)
+	require.Len(t, mockMount.formatAndMounts, 1)
+	assert.Equal(t, stagingTargetPath, mockMount.formatAndMounts[0].source)
+	assert.Equal(t, targetPath, mockMount.formatAndMounts[0].target)
+	assert.Contains(t, mockMount.formatAndMounts[0].options, "bind")
 }
 
 func TestNodePublishVolume_FileShareBind(t *testing.T) {

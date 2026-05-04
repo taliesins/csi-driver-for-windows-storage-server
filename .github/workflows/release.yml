@@ -16,6 +16,16 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      - name: Validate release token
+        env:
+          RELEASE_TOKEN: ${{ secrets.GHCR_PASSWORD }}
+        run: |
+          if [[ -z "${RELEASE_TOKEN}" ]]; then
+            echo "The GHCR_PASSWORD secret must contain a token that can push release commits and tags."
+            echo "Create it in Settings > Secrets and variables > Actions > Repository secrets."
+            exit 1
+          fi
+
       - name: Checkout source
         uses: actions/checkout@v6.0.2
         with:
