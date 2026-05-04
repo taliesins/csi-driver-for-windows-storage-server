@@ -171,31 +171,31 @@ The project provides a Makefile for common developer tasks.
 | make release       | Run goreleaser to build and release         |
 | make clean         | Clean up build artifacts                    |
 
-#### Example: Build the driver
+#### Build the driver
 
 ```sh
 make build
 ```
 
-#### Example: Run tests
+#### Run tests
 
 ```sh
 make test
 ```
 
-#### Example: Lint and format
+#### Lint and format
 
 ```sh
 make lint
 ```
 
-#### Example: Build Docker image
+#### Build Docker image
 
 ```sh
 make image
 ```
 
-#### Example: Release with goreleaser
+#### Release with goreleaser
 
 ```sh
 make release
@@ -252,36 +252,33 @@ The chart is published as an OCI artifact to GHCR at `oci://ghcr.io/taliesins/he
 #### 1. Install from GHCR
 
 ```sh
-helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
-  --namespace kube-system \
-  --create-namespace
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system
 ```
 
 #### 2. Specify a version
 
 ```sh
-helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
-  --namespace kube-system \
-  --create-namespace \
-  --version 0.1.0
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.0 -n=kube-system
 ```
 
 #### 3. Customize values (optional)
 
-Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-server/values.yaml):
+Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-server/values.yaml) by putting your changes in a values file, for example `csi-driver-overrides.yaml`:
+
+```yaml
+image:
+  tag: 1.0.0
+  pullPolicy: Always
+```
 
 ```sh
-helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
-  --namespace kube-system \
-  --create-namespace \
-  --set image.tag=0.2.0 \
-  --set image.pullPolicy=Always
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.0 -n=kube-system -f csi-driver-overrides.yaml
 ```
 
 #### 4. Verify the installation
 
 ```sh
-helm status csi-driver-for-windows-storage-server -n kube-system
+helm status csi-driver-for-windows-storage-server -n=kube-system
 
 kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-windows-storage-server
 ```
@@ -290,11 +287,10 @@ kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-win
 
 ```sh
 # Upgrade
-helm upgrade csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
-  --namespace kube-system
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system
 
 # Uninstall
-helm uninstall csi-driver-for-windows-storage-server -n kube-system
+helm uninstall csi-driver-for-windows-storage-server -n=kube-system
 ```
 
 ### Install via Helm (local chart)
@@ -302,9 +298,7 @@ helm uninstall csi-driver-for-windows-storage-server -n kube-system
 For development or air-gapped environments, you can install from the local chart directory:
 
 ```sh
-helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
-  --namespace kube-system \
-  --create-namespace
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server -n=kube-system
 ```
 
 ### Build and publish
@@ -314,8 +308,8 @@ CI builds and validates pull requests, publishes `dev-<sha>` and `dev` container
 ```sh
 make image IMAGE_TAG=dev
 make image-push IMAGE_TAG=dev
-make chart-package CHART_VERSION=0.1.0 APP_VERSION=dev
-make chart-push CHART_VERSION=0.1.0 APP_VERSION=dev
+make chart-package CHART_VERSION=1.0.0 APP_VERSION=dev
+make chart-push CHART_VERSION=1.0.0 APP_VERSION=dev
 ```
 
 For a release, run the `Create Release Tag` workflow. Semantic-release reads the conventional squash-merge commits since the previous release, calculates the next SemVer version, updates `CHANGELOG.md`, creates the `vX.Y.Z` tag, and opens the GitHub release. The tag push publishes `ghcr.io/taliesins/csi-driver-for-windows-storage-server:X.Y.Z`, `:latest`, and the matching OCI Helm chart.
@@ -390,17 +384,14 @@ The tag push triggers the publish job.
 
 The release publish creates:
 
-- Container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0`
+- Container image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:1.0.0`
 - Mutable release image: `ghcr.io/taliesins/csi-driver-for-windows-storage-server:latest`
-- Helm chart: `oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server` with version `0.2.0`
+- Helm chart: `oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server` with version `1.0.0`
 
 Install a released chart with:
 
 ```sh
-helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
-  --namespace kube-system \
-  --create-namespace \
-  --version 0.2.0
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.0 -n=kube-system
 ```
 
 ### Troubleshooting
