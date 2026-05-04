@@ -26,7 +26,7 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=mod -trimpath -ldflags="-s -w" -o /out/csiplugin ./cmd/csiplugin
 
-FROM registry.k8s.io/build-image/debian-base:bookworm-v1.0.5
+FROM registry.k8s.io/build-image/debian-base:bookworm-v1.0.7
 
 RUN apt-get update && apt-get upgrade -y && apt-mark unhold libcap2 && clean-install util-linux e2fsprogs mount ca-certificates udev xfsprogs btrfs-progs open-iscsi && rm -rf /var/lib/apt/lists/*
 
