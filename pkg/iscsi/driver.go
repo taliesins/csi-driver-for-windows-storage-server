@@ -94,6 +94,7 @@ type driver struct {
 	name             string
 	protocol         Protocol
 	fileShareBackend string
+	mode             DriverMode
 	nodeID           string
 	version          string
 	endpoint         string
@@ -110,6 +111,39 @@ const nfsVHDXDriverName = "nfs-vhdx.csi.windows.microsoft.com"
 const smbVHDXDriverName = "smb-vhdx.csi.windows.microsoft.com"
 
 var version = "0.1.0"
+
+type DriverMode string
+
+const (
+	DriverModeController DriverMode = "controller"
+	DriverModeNode       DriverMode = "node"
+)
+
+type RunOptions struct {
+	Mode           DriverMode
+	LeaderElection LeaderElectionConfig
+}
+
+type LeaderElectionConfig struct {
+	Enabled        bool
+	LeaseName      string
+	LeaseNamespace string
+	Identity       string
+	LeaseDuration  time.Duration
+	RenewDeadline  time.Duration
+	RetryPeriod    time.Duration
+}
+
+func ParseDriverMode(value string) (DriverMode, error) {
+	switch DriverMode(strings.ToLower(strings.TrimSpace(value))) {
+	case DriverModeController:
+		return DriverModeController, nil
+	case DriverModeNode:
+		return DriverModeNode, nil
+	default:
+		return "", fmt.Errorf("mode is required and must be one of: controller, node")
+	}
+}
 
 func NewDriver(nodeID, endpoint string) *driver {
 	return NewProtocolDriver(ProtocolISCSI, nodeID, endpoint)
@@ -233,10 +267,44 @@ func NewControllerServer(d *driver) *ControllerServer {
 	return &ControllerServer{Driver: d}
 }
 
-func (d *driver) Run() {
-	d.ensureRunDirectory()
+func (d *driver) Run(mode DriverMode) {
+	d.RunWithOptions(RunOptions{Mode: mode})
+}
 
-	// Build backend from environment and attach it.
+func (d *driver) RunWithOptions(opts RunOptions) {
+	d.ensureRunDirectory()
+	d.mode = opts.Mode
+
+	if opts.LeaderElection.Enabled && opts.Mode != DriverModeController {
+		klog.Fatalf("leader election is only supported in controller mode")
+	}
+
+	switch opts.Mode {
+	case DriverModeController:
+		if opts.LeaderElection.Enabled {
+			d.runControllerWithLeaderElection(opts.LeaderElection)
+			return
+		}
+		d.serveController(context.Background())
+	case DriverModeNode:
+		d.serveNode(context.Background())
+	default:
+		klog.Fatalf("invalid driver mode: %q", opts.Mode)
+	}
+}
+
+func (d *driver) runControllerWithLeaderElection(config LeaderElectionConfig) {
+	config, err := config.withDefaults(d)
+	if err != nil {
+		klog.Fatalf("invalid leader election config: %v", err)
+	}
+	klog.Infof("leader election enabled: lease=%s namespace=%s identity=%s", config.LeaseName, config.LeaseNamespace, config.Identity)
+	if err := runLeaderElectionForRun(context.Background(), config, d.serveController); err != nil {
+		klog.Fatalf("leader election failed: %v", err)
+	}
+}
+
+func (d *driver) serveController(ctx context.Context) {
 	b, err := newBackendFromEnvForRun()
 	if err != nil {
 		klog.Fatalf("failed to init WinRM backend: %v", err)
@@ -247,8 +315,27 @@ func (d *driver) Run() {
 	s.Start(d.endpoint,
 		NewDefaultIdentityServer(d),
 		NewControllerServer(d),
+		nil)
+	waitForServerContext(ctx, s)
+}
+
+func (d *driver) serveNode(ctx context.Context) {
+	s := newNonBlockingGRPCServerForRun()
+	s.Start(d.endpoint,
+		NewDefaultIdentityServer(d),
+		nil,
 		NewNodeServer(d))
-	s.Wait()
+	waitForServerContext(ctx, s)
+}
+
+func waitForServerContext(ctx context.Context, server NonBlockingGRPCServer) {
+	if done := ctx.Done(); done != nil {
+		go func() {
+			<-done
+			server.Stop()
+		}()
+	}
+	server.Wait()
 }
 
 func (d *driver) ensureRunDirectory() {

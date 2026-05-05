@@ -42,6 +42,38 @@ Create the name of the WinRM credentials secret to use
 {{- end }}
 
 {{/*
+WinRM environment for the controller pod.
+*/}}
+{{- define "csi-driver-for-windows-storage-server.winrmEnv" -}}
+- name: WINRM_HOST
+  value: {{ required "winrm.host is required" .Values.winrm.host | quote }}
+- name: WINRM_PORT
+  value: {{ .Values.winrm.port | quote }}
+- name: WINRM_TLS
+  value: {{ .Values.winrm.tls | quote }}
+- name: WINRM_INSECURE
+  value: {{ .Values.winrm.insecure | quote }}
+- name: WINRM_AUTH
+  value: {{ .Values.winrm.auth | quote }}
+- name: WINRM_TIMEOUT
+  value: {{ .Values.winrm.timeout | quote }}
+{{- if .Values.winrm.psImport }}
+- name: WINRM_PS_IMPORT
+  value: {{ .Values.winrm.psImport | quote }}
+{{- end }}
+- name: WINRM_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "csi-driver-for-windows-storage-server.winrmSecretName" . }}
+      key: WINRM_USER
+- name: WINRM_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "csi-driver-for-windows-storage-server.winrmSecretName" . }}
+      key: WINRM_PASSWORD
+{{- end }}
+
+{{/*
 Expand the name of the csi-driver-for-windows-storage-server chart.
 */}}
 {{- define "csi-driver-for-windows-storage-server.name" -}}

@@ -53,15 +53,18 @@ func (ids *IdentityServer) Probe(ctx context.Context, req *csi.ProbeRequest) (*c
 func (ids *IdentityServer) GetPluginCapabilities(ctx context.Context, req *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
 	klog.V(5).Infof("using default capabilities")
 
-	return &csi.GetPluginCapabilitiesResponse{
-		Capabilities: []*csi.PluginCapability{
-			{
-				Type: &csi.PluginCapability_Service_{
-					Service: &csi.PluginCapability_Service{
-						Type: csi.PluginCapability_Service_CONTROLLER_SERVICE,
-					},
+	var capabilities []*csi.PluginCapability
+	if ids.Driver.mode == DriverModeController {
+		capabilities = append(capabilities, &csi.PluginCapability{
+			Type: &csi.PluginCapability_Service_{
+				Service: &csi.PluginCapability_Service{
+					Type: csi.PluginCapability_Service_CONTROLLER_SERVICE,
 				},
 			},
-		},
+		})
+	}
+
+	return &csi.GetPluginCapabilitiesResponse{
+		Capabilities: capabilities,
 	}, nil
 }

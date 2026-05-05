@@ -93,18 +93,32 @@ Run the PowerShell setup script from an elevated PowerShell session on the Windo
 
 ```powershell
 $AllowedClient = "Any"   # Example: "203.0.113.10/32". Use "Any" only in an isolated lab.
+$WinRMHost = "win-storage.lab.local"      # DNS name or IP address the Kubernetes cluster can reach.
 $WinRMUser = "csi-winrm-test"
+$WinRMPassword = Read-Host "Password for $WinRMUser" -AsSecureString
 $StoragePath = "C:\data\taliesins\csi-driver-for-windows-storage-server\vhdx"
-$CertDnsName = $env:COMPUTERNAME          # Or the DNS name you will use as WINRM_HOST.
+$CertDnsName = $WinRMHost                 # Use the same name you will set as winrm.host.
 
 .\deploy\install-windows-machine.ps1 `
   -AllowedClient $AllowedClient `
   -WinRMUser $WinRMUser `
+  -WinRMPassword $WinRMPassword `
   -StoragePath $StoragePath `
   -CertDnsName $CertDnsName
 ```
 
 Use `-AllowedClient Any` and `-IscsiTargetRemoteAddress Any` only in an isolated lab. The script installs the iSCSI target features, creates the VHDX storage directory, configures a local WinRM admin user, enables WinRM HTTPS with Basic authentication on port `5986`, keeps unencrypted WinRM disabled, and opens iSCSI target port `3260`.
+
+Use the same WinRM details when installing the Helm chart. The chart passes them only to the controller pod; node pods mount iSCSI, NFS, or SMB volumes locally and do not need the Windows admin WinRM credentials.
+
+| Helm value | Source |
+|------------|--------|
+| `winrm.host` | `$WinRMHost`, the DNS name or IP address reachable from the Kubernetes cluster |
+| `winrm.user` | `$WinRMUser` |
+| `winrm.password` | The password entered for `$WinRMPassword` |
+| `winrm.port` | `5986` |
+| `winrm.tls` | `true` |
+| `winrm.insecure` | `true` when using the bootstrap script's self-signed certificate |
 
 ---
 
@@ -251,14 +265,22 @@ The chart is published as an OCI artifact to GHCR at `oci://ghcr.io/taliesins/he
 
 #### 1. Install from GHCR
 
+WinRM connection details are required for the controller. Set `winrm.host` to the Windows storage server DNS name or IP address reachable from the Kubernetes cluster, and set `winrm.user` / `winrm.password` to the account configured by the Windows bootstrap script.
+
 ```sh
-helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
 ```
 
 #### 2. Specify a version
 
 ```sh
-helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.0 -n=kube-system
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.0 -n=kube-system \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
 ```
 
 #### 3. Customize values (optional)
@@ -277,6 +299,15 @@ winrm:
   insecure: true
   existingSecret: csi-driver-winrm
 ```
+
+To run more than one controller replica, set `controller.replicas` above `1`. The chart enables Kubernetes Lease leader election only when multiple controller replicas are requested, so a single-replica controller does not need lease permissions:
+
+```yaml
+controller:
+  replicas: 2
+```
+
+Only the elected controller serves controller RPCs and renews the lease. Node pods do not use leader election.
 
 When using `winrm.existingSecret`, create the WinRM credentials secret before installing:
 
@@ -314,7 +345,7 @@ kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-win
 
 ```sh
 # Upgrade
-helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system
+helm upgrade csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system --reuse-values
 
 # Uninstall
 helm uninstall csi-driver-for-windows-storage-server -n=kube-system
@@ -418,7 +449,10 @@ The release publish creates:
 Install a released chart with:
 
 ```sh
-helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.0 -n=kube-system
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server --version=1.0.1 -n=kube-system \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
 ```
 
 ### Troubleshooting
