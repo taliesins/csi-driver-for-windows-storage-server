@@ -25,3 +25,19 @@ fullnameOverride: ""
 
 # If you need to pull images from a private registry, set this
 imagePullSecrets: []
+
+winrm:
+  host: ""
+  port: 5986
+  tls: true
+  insecure: true
+  auth: basic
+  timeout: 60s
+  psImport: ""
+
+  # Use an existing Secret with WINRM_USER and WINRM_PASSWORD keys.
+  existingSecret: ""
+
+  # When existingSecret is empty, the chart creates a Secret using winrm.user and winrm.password.
+  user: ""
+  password: ""
