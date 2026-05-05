@@ -27,6 +27,7 @@ This repository provides CSI drivers for dynamic provisioning of Windows File St
 | Online expansion | yes | yes | yes | yes | yes |
 | Raw block volume | yes | no | no | no | no |
 | CHAP or iSCSI initiator auth | yes | no | no | no | no |
+| NFS Kerberos authentication | no | yes | yes | no | no |
 | SMB mount credentials | no | no | no | yes | yes |
 | Static PV import | yes | yes | yes | yes | yes |
 
@@ -43,14 +44,15 @@ This repository provides CSI drivers for dynamic provisioning of Windows File St
 | Online expansion | Increase the size of an existing volume while it is in use, without unmounting. |
 | Raw block volume | Expose the volume as a raw block device (`volumeMode: Block`) instead of a mounted filesystem. Only iSCSI supports this. |
 | CHAP or iSCSI initiator auth | Use CHAP (Challenge-Handshake Authentication Protocol) or iSCSI initiator credentials to authenticate the connection to the iSCSI target. |
+| NFS Kerberos authentication | Create Windows NFS shares with `sys`, `krb5`, `krb5i`, or `krb5p` authentication and mount them from Linux nodes with the matching `sec=` option. |
 | SMB mount credentials | Automatically inject SMB username/password for node-stage mounting, so pods do not need to manage credentials themselves. |
 | Static PV import | Manually create a PV that references an already-existing volume on the storage server. |
 
 ### Protocol Walkthroughs
 
-- **iSCSI** — Provisions RWO iSCSI volumes backed by VHDX files and iSCSI targets.
-- **NFS (directory)** — Provisions RWX NFS shares backed by normal directories.
-- **NFS VHDX** — Provisions RWX NFS shares backed by one VHDX per volume.
+- **iSCSI** — Provisions RWO iSCSI volumes backed by VHDX files and iSCSI targets. `iqnPrefix` is optional; when omitted, the driver uses the Windows target name and reads back the Windows-generated `TargetIqn`.
+- **NFS (directory)** — Provisions RWX NFS shares backed by normal directories. Kerberos is optional with `krb5`, `krb5i`, or `krb5p`.
+- **NFS VHDX** — Provisions RWX NFS shares backed by one VHDX per volume. Kerberos is optional with `krb5`, `krb5i`, or `krb5p`.
 - **SMB (directory)** — Provisions RWX SMB shares backed by normal directories.
 - **SMB VHDX** — Provisions RWX SMB shares backed by one VHDX per volume.
 
@@ -87,6 +89,22 @@ Get-WindowsFeature FS-FileServer,Storage-Services,FS-iSCSITarget-Server,MSiSCSI,
   Format-Table DisplayName, Name, InstallState
 ```
 
+#### Kubernetes Node iSCSI Setup
+
+For iSCSI volumes, every Linux node that can run pods using the driver must have
+open-iscsi installed, `iscsid` available, and a stable initiator name in
+`/etc/iscsi/initiatorname.iscsi`.
+
+```sh
+sudo cat /etc/iscsi/initiatorname.iscsi
+# InitiatorName=iqn.1993-08.org.debian:01:...
+```
+
+The Helm chart reads this file from the host and uses that initiator IQN as the
+CSI node ID. When a pod moves to another node, Kubernetes attach calls cause the
+controller to remove the old node initiator from the Windows target and add the
+new node initiator before the node logs in.
+
 ### Windows Server Bootstrap
 
 Run the PowerShell setup script from an elevated PowerShell session on the Windows Server:
@@ -107,7 +125,7 @@ $CertDnsName = $WinRMHost                 # Use the same name you will set as wi
   -CertDnsName $CertDnsName
 ```
 
-Use `-AllowedClient Any` and `-IscsiTargetRemoteAddress Any` only in an isolated lab. The script installs the iSCSI target features, creates the VHDX storage directory, configures a local WinRM admin user, enables WinRM HTTPS with Basic authentication on port `5986`, keeps unencrypted WinRM disabled, and opens iSCSI target port `3260`.
+Use `-AllowedClient Any` and `-IscsiTargetRemoteAddress Any` only in an isolated lab. The script installs the iSCSI target features, creates the VHDX storage directory, records it as the Windows machine environment variable `CSI_VHDX_PARENT_PATH`, configures a local WinRM admin user, enables WinRM HTTPS with Basic authentication on port `5986`, keeps unencrypted WinRM disabled, and opens iSCSI target port `3260`.
 
 Use the same WinRM details when installing the Helm chart. The chart passes them only to the controller pod; node pods mount iSCSI, NFS, or SMB volumes locally and do not need the Windows admin WinRM credentials.
 
@@ -119,6 +137,80 @@ Use the same WinRM details when installing the Helm chart. The chart passes them
 | `winrm.port` | `5986` |
 | `winrm.tls` | `true` |
 | `winrm.insecure` | `true` when using the bootstrap script's self-signed certificate |
+
+#### Optional: NFS Kerberos
+
+Kerberos for NFS does not use a password in the StorageClass. The Windows server
+and Linux nodes authenticate through your Kerberos/Active Directory setup. Use
+`krb5` for authentication, `krb5i` for authentication plus integrity, or
+`krb5p` for authentication plus privacy.
+
+Before enabling it:
+
+- Join the Windows storage server to the domain that provides Kerberos.
+- Configure the required NFS service principal/SPN for the storage server, for example `nfs/win-storage.lab.local`.
+- Configure every Linux node that can run NFS pods with Kerberos and NFS client support. The install script expects the host files to be available at `/etc/krb5.conf` and `/etc/krb5.keytab`; the node pods read them through the existing `/host` mount.
+
+Run the Windows bootstrap with Kerberos enabled:
+
+```powershell
+.\deploy\install-windows-machine.ps1 `
+  -AllowedClient $AllowedClient `
+  -WinRMUser $WinRMUser `
+  -WinRMPassword $WinRMPassword `
+  -StoragePath $StoragePath `
+  -CertDnsName $CertDnsName `
+  -EnableNfsKerberos `
+  -NfsKerberosFlavor krb5p
+```
+
+Validate the Windows NFS share path and authentication setting with a disposable
+test share:
+
+```powershell
+.\deploy\validate-windows-machine.ps1 `
+  -StoragePath $StoragePath `
+  -SharePath "C:\data\taliesins\csi-driver-for-windows-storage-server\shares" `
+  -NfsKerberos `
+  -NfsKerberosFlavor krb5p
+```
+
+When installing the manifest-based drivers, enable the NFS Kerberos node
+environment:
+
+```sh
+./deploy/install-driver.sh master local --nfs-kerberos --nfs-kerberos-flavor krb5p
+```
+
+This sets the NFS and NFS VHDX node daemonsets to use the host Kerberos files:
+
+```text
+KRB5_CONFIG=/host/etc/krb5.conf
+KRB5_KTNAME=FILE:/host/etc/krb5.keytab
+KRB5_CLIENT_KTNAME=FILE:/host/etc/krb5.keytab
+```
+
+Use matching StorageClass parameters for NFS or NFS VHDX:
+
+```yaml
+parameters:
+  nfsAuthentication: "krb5p"
+  nfsMountAuthentication: "krb5p"
+```
+
+`nfsAuthentication` controls the Windows NFS share authentication setting.
+`nfsMountAuthentication` controls the Linux mount option and becomes
+`sec=krb5p` in this example. If you set multiple authentication values such as
+`"sys,krb5p"`, set `nfsMountAuthentication` explicitly to the Kerberos flavor
+the nodes should mount with. As a shorthand, `nfsKerberos: "true"` is equivalent
+to `nfsAuthentication: "krb5"` and `nfsMountAuthentication: "krb5"`.
+
+Uninstall accepts the same flags, although no separate Kerberos cleanup is
+required because the daemonsets are deleted:
+
+```sh
+./deploy/uninstall-driver.sh master local --nfs-kerberos --nfs-kerberos-flavor krb5p
+```
 
 ---
 
@@ -308,6 +400,11 @@ controller:
 ```
 
 Only the elected controller serves controller RPCs and renews the lease. Node pods do not use leader election.
+
+For iSCSI node identity, the chart defaults to reading
+`/etc/iscsi/initiatorname.iscsi` from each Kubernetes node. Override
+`node.initiatorNamePath` only if your node image stores the open-iscsi initiator
+name somewhere else.
 
 When using `winrm.existingSecret`, create the WinRM credentials secret before installing:
 

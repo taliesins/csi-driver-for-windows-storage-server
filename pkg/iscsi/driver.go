@@ -31,14 +31,14 @@ const driverRunDirEnv = "CSI_DRIVER_RUN_DIR"
 // Backend is the minimal interface the ControllerServer needs.
 // Implemented by WinRMBackend in backend_winrm.go.
 type Backend interface {
-	EnsureTarget(ctx context.Context, targetIQN string) error
+	EnsureTarget(ctx context.Context, targetName, targetIQN string) (string, error)
 	CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error)
-	MapDiskToTarget(ctx context.Context, targetIQN, vhdxPath string) (int32, error)
-	UnmapDiskFromTarget(ctx context.Context, targetIQN, vhdxPath string) error
+	MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error)
+	UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error
 	DeleteVirtualDisk(ctx context.Context, vhdxPath string) error
-	GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error)
-	AllowInitiator(ctx context.Context, targetIQN, initiatorIQN string) error
-	DenyInitiator(ctx context.Context, targetIQN, initiatorIQN string) error
+	GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error)
+	AllowInitiator(ctx context.Context, targetName, initiatorIQN string) error
+	DenyInitiator(ctx context.Context, targetName, initiatorIQN string) error
 	GetDirectoryFreeCapacity(ctx context.Context, parentDir string) (int64, error)
 	// 03-snapshots
 	CreateSnapshot(ctx context.Context, vhdxPath, description string) (SnapshotInfo, error)
@@ -48,7 +48,7 @@ type Backend interface {
 	// expansion + query
 	ResizeVirtualDisk(ctx context.Context, vhdxPath string, newSizeBytes int64) (int64, error)
 	GetVolumeInfo(ctx context.Context, vhdxPath string) (VolumeInfo, error)
-	GetTargetInitiators(ctx context.Context, targetIQN string) ([]string, error)
+	GetTargetInitiators(ctx context.Context, targetName string) ([]string, error)
 
 	CreateNfsShare(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error)
 	GetNfsShare(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error)
@@ -72,6 +72,7 @@ type NfsShareOptions struct {
 	Permission            string
 	AllowRootAccess       *bool
 	Authentication        []string
+	MountAuthentication   string
 	AnonymousUID          *int
 	AnonymousGID          *int
 	LanguageEncoding      string

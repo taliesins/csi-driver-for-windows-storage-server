@@ -252,32 +252,39 @@ func newUnitWinRMBackend() *WinRMBackend {
 
 func TestWinRMBackend_EnsureTarget(t *testing.T) {
 	tests := []struct {
-		name      string
-		targetIQN string
-		psOut     any
-		psErr     error
-		wantErr   bool
+		name          string
+		targetName    string
+		targetIQN     string
+		psOut         any
+		psErr         error
+		wantTargetIQN string
+		wantErr       bool
 	}{
 		{
-			name:      "happy path - new target",
-			targetIQN: "iqn.2024-01.com.example:new-target",
-			psOut:     map[string]any{"ok": true},
-			psErr:     nil,
-			wantErr:   false,
+			name:          "happy path - new target with explicit IQN",
+			targetName:    "iqn.2024-01.com.example:new-target",
+			targetIQN:     "iqn.2024-01.com.example:new-target",
+			psOut:         struct{ TargetIQN string }{TargetIQN: "iqn.2024-01.com.example:new-target"},
+			psErr:         nil,
+			wantTargetIQN: "iqn.2024-01.com.example:new-target",
+			wantErr:       false,
 		},
 		{
-			name:      "happy path - target already exists",
-			targetIQN: "iqn.2024-01.com.example:existing-target",
-			psOut:     map[string]any{"ok": true},
-			psErr:     nil,
-			wantErr:   false,
+			name:          "happy path - generated Windows target IQN",
+			targetName:    "existing-target",
+			targetIQN:     "",
+			psOut:         struct{ TargetIQN string }{TargetIQN: "iqn.1991-05.com.microsoft:server-existing-target"},
+			psErr:         nil,
+			wantTargetIQN: "iqn.1991-05.com.microsoft:server-existing-target",
+			wantErr:       false,
 		},
 		{
-			name:      "error from PowerShell",
-			targetIQN: "iqn.2024-01.com.example:error-target",
-			psOut:     nil,
-			psErr:     errors.New("storage error"),
-			wantErr:   true,
+			name:       "error from PowerShell",
+			targetName: "error-target",
+			targetIQN:  "",
+			psOut:      nil,
+			psErr:      errors.New("storage error"),
+			wantErr:    true,
 		},
 	}
 
@@ -285,19 +292,22 @@ func TestWinRMBackend_EnsureTarget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			backend := newUnitWinRMBackend()
 			backend.psRunner = func(ctx context.Context, script string, out any) error {
-				// Verify the script contains the target IQN
-				assert.Contains(t, script, tt.targetIQN)
+				assert.Contains(t, script, tt.targetName)
+				if tt.targetIQN != "" {
+					assert.Contains(t, script, tt.targetIQN)
+				}
 				if out != nil {
 					copyTestOutput(out, tt.psOut)
 				}
 				return tt.psErr
 			}
 
-			err := backend.EnsureTarget(context.Background(), tt.targetIQN)
+			targetIQN, err := backend.EnsureTarget(context.Background(), tt.targetName, tt.targetIQN)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+				assert.Equal(t, tt.wantTargetIQN, targetIQN)
 			}
 		})
 	}
@@ -540,49 +550,54 @@ func TestWinRMBackend_GetVolumeByName(t *testing.T) {
 		volName   string
 		parentDir string
 		psOut     struct {
-			Exists    bool
-			Path      string
-			SizeBytes int64
-			TargetIQN string
-			LUN       int32
+			Exists     bool
+			Path       string
+			SizeBytes  int64
+			TargetName string
+			TargetIQN  string
+			LUN        int32
 		}
-		psErr         error
-		wantExists    bool
-		wantPath      string
-		wantSize      int64
-		wantTargetIQN string
-		wantLUN       int32
-		wantErr       bool
+		psErr          error
+		wantExists     bool
+		wantPath       string
+		wantSize       int64
+		wantTargetName string
+		wantTargetIQN  string
+		wantLUN        int32
+		wantErr        bool
 	}{
 		{
 			name:      "volume exists",
 			volName:   "k8s-csi-test-volume-001",
 			parentDir: "D:\\vhdx",
 			psOut: struct {
-				Exists    bool
-				Path      string
-				SizeBytes int64
-				TargetIQN string
-				LUN       int32
-			}{Exists: true, Path: "D:\\vhdx\\k8s-csi-test-volume-001.vhdx", SizeBytes: 1073741824, TargetIQN: "iqn.2024-01.com.example:vol001", LUN: 0},
-			psErr:         nil,
-			wantExists:    true,
-			wantPath:      "D:\\vhdx\\k8s-csi-test-volume-001.vhdx",
-			wantSize:      1073741824,
-			wantTargetIQN: "iqn.2024-01.com.example:vol001",
-			wantLUN:       0,
-			wantErr:       false,
+				Exists     bool
+				Path       string
+				SizeBytes  int64
+				TargetName string
+				TargetIQN  string
+				LUN        int32
+			}{Exists: true, Path: "D:\\vhdx\\k8s-csi-test-volume-001.vhdx", SizeBytes: 1073741824, TargetName: "vol001", TargetIQN: "iqn.2024-01.com.example:vol001", LUN: 0},
+			psErr:          nil,
+			wantExists:     true,
+			wantPath:       "D:\\vhdx\\k8s-csi-test-volume-001.vhdx",
+			wantSize:       1073741824,
+			wantTargetName: "vol001",
+			wantTargetIQN:  "iqn.2024-01.com.example:vol001",
+			wantLUN:        0,
+			wantErr:        false,
 		},
 		{
 			name:      "volume does not exist",
 			volName:   "csi-vol-002",
 			parentDir: "E:\\storage",
 			psOut: struct {
-				Exists    bool
-				Path      string
-				SizeBytes int64
-				TargetIQN string
-				LUN       int32
+				Exists     bool
+				Path       string
+				SizeBytes  int64
+				TargetName string
+				TargetIQN  string
+				LUN        int32
 			}{Exists: false},
 			psErr:         nil,
 			wantExists:    false,
@@ -597,11 +612,12 @@ func TestWinRMBackend_GetVolumeByName(t *testing.T) {
 			volName:   "csi-vol-003",
 			parentDir: "D:\\vhdx",
 			psOut: struct {
-				Exists    bool
-				Path      string
-				SizeBytes int64
-				TargetIQN string
-				LUN       int32
+				Exists     bool
+				Path       string
+				SizeBytes  int64
+				TargetName string
+				TargetIQN  string
+				LUN        int32
 			}{},
 			psErr:         errors.New("query failed"),
 			wantExists:    false,
@@ -625,7 +641,7 @@ func TestWinRMBackend_GetVolumeByName(t *testing.T) {
 				return tt.psErr
 			}
 
-			exists, path, size, targetIQN, lun, err := backend.GetVolumeByName(context.Background(), tt.volName, tt.parentDir)
+			exists, path, size, targetName, targetIQN, lun, err := backend.GetVolumeByName(context.Background(), tt.volName, tt.parentDir)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -633,6 +649,7 @@ func TestWinRMBackend_GetVolumeByName(t *testing.T) {
 				assert.Equal(t, tt.wantExists, exists)
 				assert.Equal(t, tt.wantPath, path)
 				assert.Equal(t, tt.wantSize, size)
+				assert.Equal(t, tt.wantTargetName, targetName)
 				assert.Equal(t, tt.wantTargetIQN, targetIQN)
 				assert.Equal(t, tt.wantLUN, lun)
 			}

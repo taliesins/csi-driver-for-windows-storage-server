@@ -171,7 +171,7 @@ func (b *WinRMBackend) runPS(ctx context.Context, script string, out any) error 
 	if b.PSModuleImport == "" {
 		b.PSModuleImport = "Import-Module IscsiTarget"
 	}
-	ps := fmt.Sprintf(`$ErrorActionPreference='Stop'; %s; $IscsiTargetComputerName='localhost'; function Get-MappedIscsiTargetNames([string]$Path) { @(Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -ErrorAction SilentlyContinue | ForEach-Object { $targetName = $_.TargetName; @($_.LunMappings) | Where-Object { $_.Path -eq $Path } | ForEach-Object { $targetName } }) }; function Get-IscsiInitiatorIQNValues($InitiatorIds) { @($InitiatorIds | ForEach-Object { $raw = ''; if ($_ -is [string]) { $raw = $_ } elseif ($_.PSObject.Properties['IQN'] -and $_.IQN) { $raw = $_.IQN } elseif ($_.PSObject.Properties['Value'] -and $_.Method -eq 'Iqn') { $raw = $_.Value }; if (-not [string]::IsNullOrWhiteSpace($raw)) { if ($raw -like 'IQN:*') { $raw.Substring(4) } else { $raw } } }) }; try { $result = & { %s }; $result | ConvertTo-Json -Compress -Depth 6 } catch { Write-Error $_; exit 1 }`,
+	ps := fmt.Sprintf(`$ErrorActionPreference='Stop'; %s; $IscsiTargetComputerName='localhost'; function Resolve-CsiVHDXParentPath([string]$ParentDir) { $path = $ParentDir; if ([string]::IsNullOrWhiteSpace($path)) { $path = [Environment]::GetEnvironmentVariable('CSI_VHDX_PARENT_PATH', 'Machine') }; if ([string]::IsNullOrWhiteSpace($path)) { $path = [Environment]::GetEnvironmentVariable('CSI_VHDX_PARENT_PATH', 'Process') }; if ([string]::IsNullOrWhiteSpace($path)) { $systemDrive = $env:SystemDrive; if ([string]::IsNullOrWhiteSpace($systemDrive)) { $systemDrive = 'C:' }; $path = $systemDrive.TrimEnd('\') + '\iSCSIVirtualDisks' }; New-Item -ItemType Directory -Force -Path $path | Out-Null; return (Get-Item -LiteralPath $path).FullName.TrimEnd([char[]]@('\','/')) }; function Get-MappedIscsiTargets([string]$Path) { @(Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -ErrorAction SilentlyContinue | ForEach-Object { $target = $_; @($target.LunMappings) | Where-Object { $_.Path -eq $Path } | ForEach-Object { [pscustomobject]@{ TargetName=[string]$target.TargetName; TargetIQN=[string]$target.TargetIqn } } }) }; function Get-MappedIscsiTargetNames([string]$Path) { @(Get-MappedIscsiTargets -Path $Path | ForEach-Object { $_.TargetName }) }; function Get-IscsiInitiatorIQNValues($InitiatorIds) { @($InitiatorIds | ForEach-Object { $raw = ''; if ($_ -is [string]) { $raw = $_ } elseif ($_.PSObject.Properties['IQN'] -and $_.IQN) { $raw = $_.IQN } elseif ($_.PSObject.Properties['Value'] -and $_.Method -eq 'Iqn') { $raw = $_.Value }; if (-not [string]::IsNullOrWhiteSpace($raw)) { if ($raw -like 'IQN:*') { $raw.Substring(4) } else { $raw } } }) }; try { $result = & { %s }; $result | ConvertTo-Json -Compress -Depth 6 } catch { Write-Error $_; exit 1 }`,
 		b.PSModuleImport, script)
 
 	done := make(chan struct{})
@@ -215,18 +215,43 @@ func escapePS(s string) string {
 
 // ------------------- Backend implementation -------------------
 
-func (b *WinRMBackend) EnsureTarget(ctx context.Context, targetIQN string) error {
+func (b *WinRMBackend) EnsureTarget(ctx context.Context, targetName, targetIQN string) (string, error) {
+	targetName = strings.TrimSpace(targetName)
+	targetIQN = strings.TrimSpace(targetIQN)
+	if targetName == "" {
+		return "", fmt.Errorf("target name is required")
+	}
 	s := fmt.Sprintf(`
-$t = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s' -ErrorAction SilentlyContinue
-if (-not $t) { New-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s' | Out-Null }
-@{ ok = $true }`, escapePS(targetIQN), escapePS(targetIQN))
-	var out map[string]any
-	return b.runPS(ctx, s, &out)
+$targetName = '%s'
+$targetIQN = '%s'
+$t = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -ErrorAction SilentlyContinue
+if (-not $t) {
+  $t = New-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName
+}
+if (-not [string]::IsNullOrWhiteSpace($targetIQN) -and [string]$t.TargetIqn -ne $targetIQN) {
+  $t = Set-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -TargetIqn $targetIQN -PassThru
+  if (-not $t) {
+    $t = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName
+  }
+}
+@{ targetName=[string]$t.TargetName; targetIQN=[string]$t.TargetIqn }`, escapePS(targetName), escapePS(targetIQN))
+	var out struct {
+		TargetName string `json:"targetName"`
+		TargetIQN  string `json:"targetIQN"`
+	}
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.TargetIQN) == "" {
+		return "", fmt.Errorf("target %q has no TargetIqn", targetName)
+	}
+	return out.TargetIQN, nil
 }
 
 func (b *WinRMBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 	s := fmt.Sprintf(`
-$path = Join-Path -Path '%s' -ChildPath ('%s' + '.vhdx')
+$parentDir = Resolve-CsiVHDXParentPath '%s'
+$path = Join-Path -Path $parentDir -ChildPath ('%s' + '.vhdx')
 if (-not (Test-Path -LiteralPath $path)) {
   New-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path -SizeBytes %d | Out-Null
 }
@@ -243,7 +268,7 @@ $vd = Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path
 	return out.Path, out.SizeBytes, nil
 }
 
-func (b *WinRMBackend) MapDiskToTarget(ctx context.Context, targetIQN, vhdxPath string) (int32, error) {
+func (b *WinRMBackend) MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error) {
 	s := fmt.Sprintf(`
 $vd = Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s'
 $mappedTargets = @(Get-MappedIscsiTargetNames -Path '%s')
@@ -252,7 +277,7 @@ if ($mappedTargets -notcontains '%s') {
 }
 # Single-disk target → LUN 0
 @{ lun = 0 }
-`, escapePS(vhdxPath), escapePS(vhdxPath), escapePS(targetIQN), escapePS(targetIQN), escapePS(vhdxPath))
+`, escapePS(vhdxPath), escapePS(vhdxPath), escapePS(targetName), escapePS(targetName), escapePS(vhdxPath))
 	var out struct {
 		LUN int32 `json:"lun"`
 	}
@@ -262,13 +287,13 @@ if ($mappedTargets -notcontains '%s') {
 	return out.LUN, nil
 }
 
-func (b *WinRMBackend) UnmapDiskFromTarget(ctx context.Context, targetIQN, vhdxPath string) error {
+func (b *WinRMBackend) UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error {
 	s := fmt.Sprintf(`
 if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -ErrorAction SilentlyContinue) {
   Remove-IscsiVirtualDiskTargetMapping -ComputerName $IscsiTargetComputerName -TargetName '%s' -Path '%s' -ErrorAction SilentlyContinue
 }
 @{ ok = $true }
-`, escapePS(vhdxPath), escapePS(targetIQN), escapePS(vhdxPath))
+`, escapePS(vhdxPath), escapePS(targetName), escapePS(vhdxPath))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
@@ -285,39 +310,43 @@ if (Test-Path -LiteralPath '%s') { Remove-Item -LiteralPath '%s' -Force -ErrorAc
 	return b.runPS(ctx, s, &out)
 }
 
-func (b *WinRMBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+func (b *WinRMBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 	s := fmt.Sprintf(`
-$path = Join-Path -Path '%s' -ChildPath ('%s' + '.vhdx')
+$parentDir = Resolve-CsiVHDXParentPath '%s'
+$path = Join-Path -Path $parentDir -ChildPath ('%s' + '.vhdx')
 if (-not (Test-Path -LiteralPath $path)) {
   @{ exists=$false }
 } else {
   $vd = Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path
-  $targets = @(Get-MappedIscsiTargetNames -Path $path)
+  $targets = @(Get-MappedIscsiTargets -Path $path)
   $lun = if ($targets.Count -gt 0) { 0 } else { -1 }
+  $targetName = ''
   $targetIQN = ''
   if ($targets.Count -gt 0) {
-    $targetIQN = [string]$targets[0]
+    $targetName = [string]$targets[0].TargetName
+    $targetIQN = [string]$targets[0].TargetIQN
   }
-  @{ exists=$true; path=$path; sizeBytes=[int64]$vd.Size; targetIQN=$targetIQN; lun = $lun }
+  @{ exists=$true; path=$path; sizeBytes=[int64]$vd.Size; targetName=$targetName; targetIQN=$targetIQN; lun = $lun }
 }
 `, escapePS(parentDir), escapePS(name))
 	var out struct {
-		Exists    bool   `json:"exists"`
-		Path      string `json:"path"`
-		SizeBytes int64  `json:"sizeBytes"`
-		TargetIQN string `json:"targetIQN"`
-		LUN       int32  `json:"lun"`
+		Exists     bool   `json:"exists"`
+		Path       string `json:"path"`
+		SizeBytes  int64  `json:"sizeBytes"`
+		TargetName string `json:"targetName"`
+		TargetIQN  string `json:"targetIQN"`
+		LUN        int32  `json:"lun"`
 	}
 	if err := b.runPS(ctx, s, &out); err != nil {
-		return false, "", 0, "", -1, err
+		return false, "", 0, "", "", -1, err
 	}
 	if !out.Exists {
-		return false, "", 0, "", -1, nil
+		return false, "", 0, "", "", -1, nil
 	}
-	return out.Exists, out.Path, out.SizeBytes, out.TargetIQN, out.LUN, nil
+	return out.Exists, out.Path, out.SizeBytes, out.TargetName, out.TargetIQN, out.LUN, nil
 }
 
-func (b *WinRMBackend) AllowInitiator(ctx context.Context, targetIQN, initiatorIQN string) error {
+func (b *WinRMBackend) AllowInitiator(ctx context.Context, targetName, initiatorIQN string) error {
 	s := fmt.Sprintf(`
 $t = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s'
 $iqns = @(Get-IscsiInitiatorIQNValues $t.InitiatorIds)
@@ -327,12 +356,12 @@ if ($iqns -notcontains '%s') {
   Set-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s' -InitiatorIds $initiatorIds | Out-Null
 }
 @{ ok = $true }
-`, escapePS(targetIQN), escapePS(initiatorIQN), escapePS(initiatorIQN), escapePS(targetIQN))
+`, escapePS(targetName), escapePS(initiatorIQN), escapePS(initiatorIQN), escapePS(targetName))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
 
-func (b *WinRMBackend) DenyInitiator(ctx context.Context, targetIQN, initiatorIQN string) error {
+func (b *WinRMBackend) DenyInitiator(ctx context.Context, targetName, initiatorIQN string) error {
 	s := fmt.Sprintf(`
 $t = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s' -ErrorAction SilentlyContinue
 if ($t) {
@@ -341,16 +370,16 @@ if ($t) {
   Set-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s' -InitiatorIds $initiatorIds | Out-Null
 }
 @{ ok = $true }
-`, escapePS(targetIQN), escapePS(initiatorIQN), escapePS(targetIQN))
+`, escapePS(targetName), escapePS(initiatorIQN), escapePS(targetName))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
 
-func (b *WinRMBackend) GetTargetInitiators(ctx context.Context, targetIQN string) ([]string, error) {
+func (b *WinRMBackend) GetTargetInitiators(ctx context.Context, targetName string) ([]string, error) {
 	s := fmt.Sprintf(`
 $t = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName '%s' -ErrorAction SilentlyContinue
 if (-not $t) { @{ iqns=@() } } else { @{ iqns = @(Get-IscsiInitiatorIQNValues $t.InitiatorIds) } }
-`, escapePS(targetIQN))
+`, escapePS(targetName))
 	var out struct {
 		IQNs []string `json:"iqns"`
 	}
@@ -362,7 +391,8 @@ if (-not $t) { @{ iqns=@() } } else { @{ iqns = @(Get-IscsiInitiatorIQNValues $t
 
 func (b *WinRMBackend) GetDirectoryFreeCapacity(ctx context.Context, parentDir string) (int64, error) {
 	s := fmt.Sprintf(`
-$item = Get-Item -LiteralPath '%s'
+$parentDir = Resolve-CsiVHDXParentPath '%s'
+$item = Get-Item -LiteralPath $parentDir
 $drive = $item.PSDrive.Name
 $psd = Get-PSDrive -Name $drive
 @{ free=[int64]$psd.Free }

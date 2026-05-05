@@ -30,9 +30,9 @@ func mockInt64(v any) int64 {
 }
 
 // EnsureTarget mocks EnsureTarget.
-func (m *MockBackend) EnsureTarget(ctx context.Context, targetIQN string) error {
-	args := m.Called(ctx, targetIQN)
-	return args.Error(0)
+func (m *MockBackend) EnsureTarget(ctx context.Context, targetName, targetIQN string) (string, error) {
+	args := m.Called(ctx, targetName, targetIQN)
+	return args.String(0), args.Error(1)
 }
 
 // CreateVirtualDisk mocks CreateVirtualDisk.
@@ -42,14 +42,14 @@ func (m *MockBackend) CreateVirtualDisk(ctx context.Context, name, parentDir str
 }
 
 // MapDiskToTarget mocks MapDiskToTarget.
-func (m *MockBackend) MapDiskToTarget(ctx context.Context, targetIQN, vhdxPath string) (int32, error) {
-	args := m.Called(ctx, targetIQN, vhdxPath)
+func (m *MockBackend) MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error) {
+	args := m.Called(ctx, targetName, vhdxPath)
 	return args.Get(0).(int32), args.Error(1)
 }
 
 // UnmapDiskFromTarget mocks UnmapDiskFromTarget.
-func (m *MockBackend) UnmapDiskFromTarget(ctx context.Context, targetIQN, vhdxPath string) error {
-	args := m.Called(ctx, targetIQN, vhdxPath)
+func (m *MockBackend) UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error {
+	args := m.Called(ctx, targetName, vhdxPath)
 	return args.Error(0)
 }
 
@@ -60,20 +60,20 @@ func (m *MockBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) er
 }
 
 // GetVolumeByName mocks GetVolumeByName.
-func (m *MockBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+func (m *MockBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 	args := m.Called(ctx, name, parentDir)
-	return args.Bool(0), args.String(1), mockInt64(args.Get(2)), args.String(3), args.Get(4).(int32), args.Error(5)
+	return args.Bool(0), args.String(1), mockInt64(args.Get(2)), args.String(3), args.String(4), args.Get(5).(int32), args.Error(6)
 }
 
 // AllowInitiator mocks AllowInitiator.
-func (m *MockBackend) AllowInitiator(ctx context.Context, targetIQN, initiatorIQN string) error {
-	args := m.Called(ctx, targetIQN, initiatorIQN)
+func (m *MockBackend) AllowInitiator(ctx context.Context, targetName, initiatorIQN string) error {
+	args := m.Called(ctx, targetName, initiatorIQN)
 	return args.Error(0)
 }
 
 // DenyInitiator mocks DenyInitiator.
-func (m *MockBackend) DenyInitiator(ctx context.Context, targetIQN, initiatorIQN string) error {
-	args := m.Called(ctx, targetIQN, initiatorIQN)
+func (m *MockBackend) DenyInitiator(ctx context.Context, targetName, initiatorIQN string) error {
+	args := m.Called(ctx, targetName, initiatorIQN)
 	return args.Error(0)
 }
 
@@ -120,8 +120,8 @@ func (m *MockBackend) GetVolumeInfo(ctx context.Context, vhdxPath string) (Volum
 }
 
 // GetTargetInitiators mocks GetTargetInitiators.
-func (m *MockBackend) GetTargetInitiators(ctx context.Context, targetIQN string) ([]string, error) {
-	args := m.Called(ctx, targetIQN)
+func (m *MockBackend) GetTargetInitiators(ctx context.Context, targetName string) ([]string, error) {
+	args := m.Called(ctx, targetName)
 	return args.Get(0).([]string), args.Error(1)
 }
 
@@ -189,10 +189,12 @@ func (m *MockBackend) UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath,
 
 func TestMockBackend_EnsureTarget(t *testing.T) {
 	m := new(MockBackend)
-	m.On("EnsureTarget", mock.Anything, "iqn.2024-01.com.example:test").Return(nil)
+	m.On("EnsureTarget", mock.Anything, "target-test", "iqn.2024-01.com.example:test").
+		Return("iqn.2024-01.com.example:test", nil)
 
-	err := m.EnsureTarget(context.Background(), "iqn.2024-01.com.example:test")
+	targetIQN, err := m.EnsureTarget(context.Background(), "target-test", "iqn.2024-01.com.example:test")
 	assert.NoError(t, err)
+	assert.Equal(t, "iqn.2024-01.com.example:test", targetIQN)
 
 	m.AssertExpectations(t)
 }
@@ -235,13 +237,14 @@ func TestMockBackend_DeleteVirtualDisk(t *testing.T) {
 func TestMockBackend_GetVolumeByName(t *testing.T) {
 	m := new(MockBackend)
 	m.On("GetVolumeByName", mock.Anything, "test-vol", "D:\\vhdx").
-		Return(true, "D:\\vhdx\\test-vol.vhdx", 1073741824, "iqn.2024-01.com.example:test", int32(0), nil)
+		Return(true, "D:\\vhdx\\test-vol.vhdx", 1073741824, "target-test", "iqn.2024-01.com.example:test", int32(0), nil)
 
-	exists, path, size, targetIQN, lun, err := m.GetVolumeByName(context.Background(), "test-vol", "D:\\vhdx")
+	exists, path, size, targetName, targetIQN, lun, err := m.GetVolumeByName(context.Background(), "test-vol", "D:\\vhdx")
 	assert.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, "D:\\vhdx\\test-vol.vhdx", path)
 	assert.Equal(t, int64(1073741824), size)
+	assert.Equal(t, "target-test", targetName)
 	assert.Equal(t, "iqn.2024-01.com.example:test", targetIQN)
 	assert.Equal(t, int32(0), lun)
 
@@ -378,10 +381,10 @@ func TestMockBackend_GetDirectoryFreeCapacity(t *testing.T) {
 func TestMockBackend_ErrorReturn(t *testing.T) {
 	m := new(MockBackend)
 	expectedErr := fmt.Errorf("backend error")
-	m.On("EnsureTarget", mock.Anything, "iqn.2024-01.com.example:test").
-		Return(expectedErr)
+	m.On("EnsureTarget", mock.Anything, "target-test", "iqn.2024-01.com.example:test").
+		Return("", expectedErr)
 
-	err := m.EnsureTarget(context.Background(), "iqn.2024-01.com.example:test")
+	_, err := m.EnsureTarget(context.Background(), "target-test", "iqn.2024-01.com.example:test")
 	assert.Equal(t, expectedErr, err)
 
 	m.AssertExpectations(t)
@@ -390,13 +393,14 @@ func TestMockBackend_ErrorReturn(t *testing.T) {
 func TestMockBackend_GetVolumeByName_NotFound(t *testing.T) {
 	m := new(MockBackend)
 	m.On("GetVolumeByName", mock.Anything, "nonexistent-vol", "D:\\vhdx").
-		Return(false, "", 0, "", int32(-1), nil)
+		Return(false, "", 0, "", "", int32(-1), nil)
 
-	exists, path, size, targetIQN, lun, err := m.GetVolumeByName(context.Background(), "nonexistent-vol", "D:\\vhdx")
+	exists, path, size, targetName, targetIQN, lun, err := m.GetVolumeByName(context.Background(), "nonexistent-vol", "D:\\vhdx")
 	assert.NoError(t, err)
 	assert.False(t, exists)
 	assert.Equal(t, "", path)
 	assert.Equal(t, int64(0), size)
+	assert.Equal(t, "", targetName)
 	assert.Equal(t, "", targetIQN)
 	assert.Equal(t, int32(-1), lun)
 

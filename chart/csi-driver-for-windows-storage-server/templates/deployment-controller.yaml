@@ -16,6 +16,36 @@ spec:
     spec:
       serviceAccountName: {{ include "csi-driver-for-windows-storage-server.controllerServiceAccountName" . }}
       containers:
+        - name: csi-provisioner
+          image: {{ .Values.sidecars.provisioner.image | quote }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --v={{ .Values.sidecars.logLevel }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-attacher
+          image: {{ .Values.sidecars.attacher.image | quote }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --v={{ .Values.sidecars.logLevel }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: liveness-probe
+          image: {{ .Values.sidecars.livenessProbe.image | quote }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --probe-timeout=3s
+            - --health-port=29752
+            - --v={{ .Values.sidecars.logLevel }}
+          ports:
+            - containerPort: 29752
+              name: healthz
+              protocol: TCP
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
         - name: controller-driver
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}

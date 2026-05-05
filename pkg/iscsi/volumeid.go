@@ -21,19 +21,22 @@ const (
 )
 
 type VolumeID struct {
-	Name          string
-	Protocol      Protocol
-	ShareBackend  string
-	SharePath     string
-	TargetPortal  string
-	TargetIQN     string
-	LUN           int
-	VHDXPath      string
-	NfsServer     string
-	NfsExportPath string
-	SmbServer     string
-	SmbShareName  string
-	CapacityBytes int64
+	Name                   string
+	Protocol               Protocol
+	ShareBackend           string
+	SharePath              string
+	TargetPortal           string
+	TargetName             string
+	TargetIQN              string
+	LUN                    int
+	VHDXPath               string
+	NfsServer              string
+	NfsExportPath          string
+	NfsAuthentication      string
+	NfsMountAuthentication string
+	SmbServer              string
+	SmbShareName           string
+	CapacityBytes          int64
 
 	nameSpecified bool
 	lunSpecified  bool
@@ -58,6 +61,9 @@ func EncodeVolumeID(v *VolumeID) string {
 	if v.SharePath != "" {
 		q.Set("sharePath", v.SharePath)
 	}
+	if v.TargetName != "" {
+		q.Set("targetName", v.TargetName)
+	}
 
 	switch v.Protocol {
 	case ProtocolISCSI:
@@ -76,6 +82,12 @@ func EncodeVolumeID(v *VolumeID) string {
 		}
 		if v.NfsServer != "" {
 			q.Set("nfsServer", v.NfsServer)
+		}
+		if v.NfsAuthentication != "" {
+			q.Set("nfsAuthentication", v.NfsAuthentication)
+		}
+		if v.NfsMountAuthentication != "" {
+			q.Set("nfsMountAuthentication", v.NfsMountAuthentication)
 		}
 		return buildURI(ProtocolNFS, host, splitPath(v.NfsExportPath), q)
 	case ProtocolSMB:
@@ -128,6 +140,7 @@ func DecodeVolumeID(id string) (*VolumeID, error) {
 	out.VHDXPath = q.Get("vhdxPath")
 	out.ShareBackend = q.Get("shareBackend")
 	out.SharePath = q.Get("sharePath")
+	out.TargetName = q.Get("targetName")
 
 	switch proto {
 	case ProtocolISCSI:
@@ -153,6 +166,8 @@ func DecodeVolumeID(id string) (*VolumeID, error) {
 		if out.NfsServer == "" {
 			out.NfsServer = hostOnly(u.Host)
 		}
+		out.NfsAuthentication = q.Get("nfsAuthentication")
+		out.NfsMountAuthentication = q.Get("nfsMountAuthentication")
 		out.NfsExportPath = u.Path
 	case ProtocolSMB:
 		out.SmbServer = q.Get("smbServer")

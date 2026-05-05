@@ -15,14 +15,14 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockBackend struct {
-	ensureTargetFn              func(ctx context.Context, targetIQN string) error
+	ensureTargetFn              func(ctx context.Context, targetName, targetIQN string) (string, error)
 	createVirtualDiskFn         func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error)
-	mapDiskToTargetFn           func(ctx context.Context, targetIQN, vhdxPath string) (int32, error)
-	unmapDiskFromTargetFn       func(ctx context.Context, targetIQN, vhdxPath string) error
+	mapDiskToTargetFn           func(ctx context.Context, targetName, vhdxPath string) (int32, error)
+	unmapDiskFromTargetFn       func(ctx context.Context, targetName, vhdxPath string) error
 	deleteVirtualDiskFn         func(ctx context.Context, vhdxPath string) error
-	getVolumeByNameFn           func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error)
-	allowInitiatorFn            func(ctx context.Context, targetIQN, initiatorIQN string) error
-	denyInitiatorFn             func(ctx context.Context, targetIQN, initiatorIQN string) error
+	getVolumeByNameFn           func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error)
+	allowInitiatorFn            func(ctx context.Context, targetName, initiatorIQN string) error
+	denyInitiatorFn             func(ctx context.Context, targetName, initiatorIQN string) error
 	getDirectoryFreeCapFn       func(ctx context.Context, parentDir string) (int64, error)
 	createSnapshotFn            func(ctx context.Context, vhdxPath, desc string) (SnapshotInfo, error)
 	deleteSnapshotFn            func(ctx context.Context, snapshotID string) error
@@ -30,7 +30,7 @@ type mockBackend struct {
 	exportSnapFn                func(ctx context.Context, snapshotID string) (string, error)
 	resizeVirtualDiskFn         func(ctx context.Context, vhdxPath string, newSizeBytes int64) (int64, error)
 	getVolumeInfoFn             func(ctx context.Context, vhdxPath string) (VolumeInfo, error)
-	getTargetInitiatorsFn       func(ctx context.Context, targetIQN string) ([]string, error)
+	getTargetInitiatorsFn       func(ctx context.Context, targetName string) ([]string, error)
 	createNfsShareFn            func(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string) (VolumeInfo, error)
 	createNfsShareWithOptionsFn func(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error)
 	getNfsShareFn               func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error)
@@ -45,11 +45,11 @@ type mockBackend struct {
 	unmountFileShareVhdxFn      func(ctx context.Context, vhdxPath, mountPath string) error
 }
 
-func (m *mockBackend) EnsureTarget(ctx context.Context, targetIQN string) error {
+func (m *mockBackend) EnsureTarget(ctx context.Context, targetName, targetIQN string) (string, error) {
 	if m.ensureTargetFn != nil {
-		return m.ensureTargetFn(ctx, targetIQN)
+		return m.ensureTargetFn(ctx, targetName, targetIQN)
 	}
-	return nil
+	return firstNonEmpty(targetIQN, targetName), nil
 }
 func (m *mockBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 	if m.createVirtualDiskFn != nil {
@@ -57,15 +57,15 @@ func (m *mockBackend) CreateVirtualDisk(ctx context.Context, name, parentDir str
 	}
 	return "", 0, errors.New("not implemented")
 }
-func (m *mockBackend) MapDiskToTarget(ctx context.Context, targetIQN, vhdxPath string) (int32, error) {
+func (m *mockBackend) MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error) {
 	if m.mapDiskToTargetFn != nil {
-		return m.mapDiskToTargetFn(ctx, targetIQN, vhdxPath)
+		return m.mapDiskToTargetFn(ctx, targetName, vhdxPath)
 	}
 	return 0, errors.New("not implemented")
 }
-func (m *mockBackend) UnmapDiskFromTarget(ctx context.Context, targetIQN, vhdxPath string) error {
+func (m *mockBackend) UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error {
 	if m.unmapDiskFromTargetFn != nil {
-		return m.unmapDiskFromTargetFn(ctx, targetIQN, vhdxPath)
+		return m.unmapDiskFromTargetFn(ctx, targetName, vhdxPath)
 	}
 	return nil
 }
@@ -75,21 +75,21 @@ func (m *mockBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) er
 	}
 	return nil
 }
-func (m *mockBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+func (m *mockBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 	if m.getVolumeByNameFn != nil {
 		return m.getVolumeByNameFn(ctx, name, parentDir)
 	}
-	return false, "", 0, "", -1, nil
+	return false, "", 0, "", "", -1, nil
 }
-func (m *mockBackend) AllowInitiator(ctx context.Context, targetIQN, initiatorIQN string) error {
+func (m *mockBackend) AllowInitiator(ctx context.Context, targetName, initiatorIQN string) error {
 	if m.allowInitiatorFn != nil {
-		return m.allowInitiatorFn(ctx, targetIQN, initiatorIQN)
+		return m.allowInitiatorFn(ctx, targetName, initiatorIQN)
 	}
 	return nil
 }
-func (m *mockBackend) DenyInitiator(ctx context.Context, targetIQN, initiatorIQN string) error {
+func (m *mockBackend) DenyInitiator(ctx context.Context, targetName, initiatorIQN string) error {
 	if m.denyInitiatorFn != nil {
-		return m.denyInitiatorFn(ctx, targetIQN, initiatorIQN)
+		return m.denyInitiatorFn(ctx, targetName, initiatorIQN)
 	}
 	return nil
 }
@@ -135,9 +135,9 @@ func (m *mockBackend) GetVolumeInfo(ctx context.Context, vhdxPath string) (Volum
 	}
 	return VolumeInfo{}, nil
 }
-func (m *mockBackend) GetTargetInitiators(ctx context.Context, targetIQN string) ([]string, error) {
+func (m *mockBackend) GetTargetInitiators(ctx context.Context, targetName string) ([]string, error) {
 	if m.getTargetInitiatorsFn != nil {
-		return m.getTargetInitiatorsFn(ctx, targetIQN)
+		return m.getTargetInitiatorsFn(ctx, targetName)
 	}
 	return nil, nil
 }
@@ -256,6 +256,20 @@ func newTestVolumeID(t *testing.T) string {
 	return encodeVolID(vid)
 }
 
+func newTestVolumeIDWithTargetName(t *testing.T) string {
+	t.Helper()
+	vid := volID{
+		VolumeName:   "test-volume",
+		TargetPortal: "10.0.0.1:3260",
+		TargetName:   "test-volume",
+		TargetIQN:    "iqn.1991-05.com.microsoft:win-storage-test-volume",
+		LUN:          0,
+		VHDXPath:     "D:\\vhdx\\test-volume.vhdx",
+		SizeBytes:    1073741824,
+	}
+	return encodeVolID(vid)
+}
+
 func newTestSnapshotID(t *testing.T) string {
 	t.Helper()
 	sid := snapID{
@@ -295,6 +309,26 @@ func TestRequiredBytesFromRange(t *testing.T) {
 	}
 }
 
+func TestTargetPortalAddress(t *testing.T) {
+	tests := []struct {
+		name   string
+		host   string
+		port   int
+		expect string
+	}{
+		{name: "host without port", host: "win-storage.lab.local", port: 3260, expect: "win-storage.lab.local:3260"},
+		{name: "host with port", host: "win-storage.lab.local:3260", port: 3260, expect: "win-storage.lab.local:3260"},
+		{name: "custom port", host: "win-storage.lab.local", port: 3200, expect: "win-storage.lab.local:3200"},
+		{name: "ipv6", host: "2001:db8::1", port: 3260, expect: "[2001:db8::1]:3260"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expect, targetPortalAddress(tt.host, tt.port))
+		})
+	}
+}
+
 func TestFileShareParamValidation(t *testing.T) {
 	t.Run("invalid backend", func(t *testing.T) {
 		cs, _, _ := newTestControllerServerForProtocol(t, ProtocolNFS)
@@ -328,6 +362,12 @@ func TestFileShareParamValidation(t *testing.T) {
 		assert.Contains(t, err.Error(), "nfsPermission")
 	})
 
+	t.Run("invalid nfs authentication", func(t *testing.T) {
+		_, err := nfsOptionsFromParams(map[string]string{"nfsAuthentication": "password"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nfsAuthentication")
+	})
+
 	t.Run("valid nfs aliases", func(t *testing.T) {
 		opts, err := nfsOptionsFromParams(map[string]string{
 			"nfsPermission":            "read-write",
@@ -351,7 +391,15 @@ func TestFileShareParamValidation(t *testing.T) {
 		require.NotNil(t, opts.AnonymousGID)
 		assert.Equal(t, 65533, *opts.AnonymousGID)
 		assert.Equal(t, []string{"sys", "krb5"}, opts.Authentication)
+		assert.Equal(t, "krb5", opts.MountAuthentication)
 		assert.Equal(t, "EUC-JP", opts.LanguageEncoding)
+	})
+
+	t.Run("valid nfs kerberos shortcut", func(t *testing.T) {
+		opts, err := nfsOptionsFromParams(map[string]string{"nfsKerberos": "krb5p"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"krb5p"}, opts.Authentication)
+		assert.Equal(t, "krb5p", opts.MountAuthentication)
 	})
 
 	t.Run("invalid smb bool", func(t *testing.T) {
@@ -408,9 +456,26 @@ func TestCreateVolume_TargetPortalRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "targetPortal is required")
 }
 
-func TestCreateVolume_VhdxParentPathRequired(t *testing.T) {
-	cs, _, _ := newTestControllerServer(t)
-	_, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+func TestCreateVolume_VhdxParentPathOptionalUsesBackendDefault(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
+		assert.Empty(t, parentDir)
+		return false, "", 0, "", "", -1, nil
+	}
+	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
+		assert.Empty(t, parentDir)
+		return "E:\\iSCSIVirtualDisks\\" + name + ".vhdx", sizeBytes, nil
+	}
+	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
+		return firstNonEmpty(targetIQN, targetName), nil
+	}
+	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetName, vhdxPath string) (int32, error) {
+		assert.Equal(t, "E:\\iSCSIVirtualDisks\\test-volume.vhdx", vhdxPath)
+		return 0, nil
+	}
+
+	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
 		Name: "test-volume",
 		VolumeCapabilities: []*csi.VolumeCapability{
 			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}},
@@ -420,13 +485,32 @@ func TestCreateVolume_VhdxParentPathRequired(t *testing.T) {
 			"iqnPrefix":    "iqn.2024-01.com.example",
 		},
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "vhdxParentPath is required")
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "iqn.2024-01.com.example:test-volume", resp.Volume.VolumeContext["iqn"])
 }
 
-func TestCreateVolume_IqnPrefixRequired(t *testing.T) {
-	cs, _, _ := newTestControllerServer(t)
-	_, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+func TestCreateVolume_IqnPrefixOptionalUsesWindowsGeneratedIQN(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
+		return false, "", 0, "", "", -1, nil
+	}
+	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
+		return "D:\\vhdx\\" + name + ".vhdx", sizeBytes, nil
+	}
+	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
+		assert.Equal(t, "test-volume", targetName)
+		assert.Empty(t, targetIQN)
+		return "iqn.1991-05.com.microsoft:win-storage-test-volume", nil
+	}
+	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetName, vhdxPath string) (int32, error) {
+		assert.Equal(t, "test-volume", targetName)
+		return 0, nil
+	}
+
+	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
 		Name: "test-volume",
 		VolumeCapabilities: []*csi.VolumeCapability{
 			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}},
@@ -436,8 +520,14 @@ func TestCreateVolume_IqnPrefixRequired(t *testing.T) {
 			"vhdxParentPath": "D:\\vhdx",
 		},
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "iqnPrefix is required")
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "iqn.1991-05.com.microsoft:win-storage-test-volume", resp.Volume.VolumeContext["iqn"])
+	decoded, err := decodeVolID(resp.Volume.VolumeId)
+	require.NoError(t, err)
+	assert.Equal(t, "test-volume", decoded.TargetName)
+	assert.Equal(t, "iqn.1991-05.com.microsoft:win-storage-test-volume", decoded.TargetIQN)
 }
 
 func TestCreateVolume_InvalidAccessMode(t *testing.T) {
@@ -478,18 +568,19 @@ func TestCreateVolume_ProtocolMismatch(t *testing.T) {
 func TestCreateVolume_NewVolume_Success(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
-		return false, "", 0, "", -1, nil
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
+		return false, "", 0, "", "", -1, nil
 	}
 	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 		return "D:\\vhdx\\" + name + ".vhdx", sizeBytes, nil
 	}
-	mockBackend.ensureTargetFn = func(ctx context.Context, targetIQN string) error {
+	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", targetName)
 		assert.Equal(t, "iqn.2024-01.com.example:test-volume", targetIQN)
-		return nil
+		return targetIQN, nil
 	}
-	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetIQN, vhdxPath string) (int32, error) {
-		assert.Equal(t, "iqn.2024-01.com.example:test-volume", targetIQN)
+	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetName, vhdxPath string) (int32, error) {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", targetName)
 		assert.Equal(t, "D:\\vhdx\\test-volume.vhdx", vhdxPath)
 		return 0, nil
 	}
@@ -516,17 +607,17 @@ func TestCreateVolume_NewVolume_Success(t *testing.T) {
 	assert.Equal(t, int64(1073741824), resp.Volume.CapacityBytes)
 	assert.Equal(t, "iqn.2024-01.com.example:test-volume", resp.Volume.VolumeContext["iqn"])
 	assert.Equal(t, "0", resp.Volume.VolumeContext["lun"])
-	assert.Contains(t, resp.Volume.VolumeContext["targetPortal"], "10.0.0.1")
+	assert.Equal(t, "10.0.0.1:3260", resp.Volume.VolumeContext["targetPortal"])
 }
 
 func TestCreateVolume_Idempotent_ExistingVolume(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
-		return true, "D:\\vhdx\\test-volume.vhdx", 1073741824, "iqn.2024-01.com.example:test-volume", 0, nil
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
+		return true, "D:\\vhdx\\test-volume.vhdx", 1073741824, "iqn.2024-01.com.example:test-volume", "iqn.2024-01.com.example:test-volume", 0, nil
 	}
-	mockBackend.ensureTargetFn = func(ctx context.Context, targetIQN string) error {
-		return nil
+	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
+		return firstNonEmpty(targetIQN, targetName), nil
 	}
 
 	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
@@ -550,8 +641,8 @@ func TestCreateVolume_Idempotent_ExistingVolume(t *testing.T) {
 func TestCreateVolume_SizeConflict(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
-		return true, "D:\\vhdx\\test-volume.vhdx", 536870912, "", -1, nil
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
+		return true, "D:\\vhdx\\test-volume.vhdx", 536870912, "", "", -1, nil
 	}
 
 	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
@@ -583,10 +674,10 @@ func TestCreateVolume_FromSnapshot(t *testing.T) {
 		assert.Equal(t, snapID, snapshotID)
 		return "D:\\vhdx\\exported-snap.vhdx", nil
 	}
-	mockBackend.ensureTargetFn = func(ctx context.Context, targetIQN string) error {
-		return nil
+	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
+		return firstNonEmpty(targetIQN, targetName), nil
 	}
-	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetIQN, vhdxPath string) (int32, error) {
+	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetName, vhdxPath string) (int32, error) {
 		return 0, nil
 	}
 	mockBackend.getVolumeInfoFn = func(ctx context.Context, vhdxPath string) (VolumeInfo, error) {
@@ -628,8 +719,11 @@ func TestCreateVolume_NFS(t *testing.T) {
 		assert.Equal(t, "D:\\shares", parentDir)
 		return false, VolumeInfo{}, nil
 	}
-	mockBackend.createNfsShareFn = func(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string) (VolumeInfo, error) {
+	mockBackend.createNfsShareWithOptionsFn = func(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error) {
 		assert.Equal(t, []string{"10.0.0.10"}, clients)
+		require.Len(t, opts, 1)
+		assert.Equal(t, []string{"krb5p"}, opts[0].Authentication)
+		assert.Equal(t, "krb5p", opts[0].MountAuthentication)
 		return VolumeInfo{
 			VolumeName:    name,
 			Protocol:      ProtocolNFS,
@@ -650,6 +744,7 @@ func TestCreateVolume_NFS(t *testing.T) {
 			"shareParentPath": "D:\\shares",
 			"nfsServer":       "10.0.0.2",
 			"nfsClientName":   "10.0.0.10",
+			"nfsKerberos":     "krb5p",
 		},
 	})
 
@@ -658,9 +753,13 @@ func TestCreateVolume_NFS(t *testing.T) {
 	assert.Equal(t, "nfs", resp.Volume.VolumeContext["protocol"])
 	assert.Equal(t, "10.0.0.2", resp.Volume.VolumeContext["nfsServer"])
 	assert.Equal(t, "/nfs-vol", resp.Volume.VolumeContext["nfsExportPath"])
+	assert.Equal(t, "krb5p", resp.Volume.VolumeContext["nfsAuthentication"])
+	assert.Equal(t, "krb5p", resp.Volume.VolumeContext["nfsMountAuthentication"])
 	decoded, err := DecodeVolumeID(resp.Volume.VolumeId)
 	require.NoError(t, err)
 	assert.Equal(t, ProtocolNFS, decoded.Protocol)
+	assert.Equal(t, "krb5p", decoded.NfsAuthentication)
+	assert.Equal(t, "krb5p", decoded.NfsMountAuthentication)
 }
 
 func TestCreateVolume_SMB(t *testing.T) {
@@ -710,9 +809,9 @@ func TestCreateVolume_NFSOptionsAndSnapshotRestore(t *testing.T) {
 	mockBackend.getNfsShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
 		return false, VolumeInfo{}, nil
 	}
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 		assert.Equal(t, "D:\\nfs-vhdx", parentDir)
-		return false, "", 0, "", -1, nil
+		return false, "", 0, "", "", -1, nil
 	}
 	mockBackend.exportSnapFn = func(ctx context.Context, snapshotID string) (string, error) {
 		assert.Equal(t, "snap-001", snapshotID)
@@ -788,9 +887,9 @@ func TestCreateVolume_SMBOptionsAndSnapshotRestore(t *testing.T) {
 	mockBackend.getSmbShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
 		return false, VolumeInfo{}, nil
 	}
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 		assert.Equal(t, "D:\\smb-vhdx", parentDir)
-		return false, "", 0, "", -1, nil
+		return false, "", 0, "", "", -1, nil
 	}
 	mockBackend.exportSnapFn = func(ctx context.Context, snapshotID string) (string, error) {
 		assert.Equal(t, "snap-001", snapshotID)
@@ -878,10 +977,10 @@ func TestCreateVolume_VHDXBackedNFS_IdempotentExistingShare(t *testing.T) {
 			CapacityBytes: 1073741824,
 		}, nil
 	}
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 		assert.Equal(t, "nfs-existing", name)
 		assert.Equal(t, "D:\\nfs-vhdx", parentDir)
-		return true, "D:\\nfs-vhdx\\nfs-existing.vhdx", 2147483648, "", -1, nil
+		return true, "D:\\nfs-vhdx\\nfs-existing.vhdx", 2147483648, "", "", -1, nil
 	}
 	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 		t.Fatalf("idempotent VHDX-backed NFS create should not create another virtual disk")
@@ -940,10 +1039,10 @@ func TestCreateVolume_VHDXBackedSMB_ExistingShareMissingVHDX(t *testing.T) {
 			CapacityBytes: 1073741824,
 		}, nil
 	}
-	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, int32, error) {
+	mockBackend.getVolumeByNameFn = func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 		assert.Equal(t, "smb-existing", name)
 		assert.Equal(t, "D:\\smb-vhdx", parentDir)
-		return false, "", 0, "", -1, nil
+		return false, "", 0, "", "", -1, nil
 	}
 	mockBackend.mountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
 		t.Fatalf("existing SMB share without a VHDX should fail before mounting; vhdxPath=%s mountPath=%s", vhdxPath, mountPath)
@@ -1007,6 +1106,23 @@ func TestDeleteVolume_Success(t *testing.T) {
 
 	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
 		VolumeId: newTestVolumeID(t),
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+}
+
+func TestDeleteVolume_UsesTargetNameWhenPresent(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.unmapDiskFromTargetFn = func(ctx context.Context, targetName, vhdxPath string) error {
+		assert.Equal(t, "test-volume", targetName)
+		assert.Equal(t, "D:\\vhdx\\test-volume.vhdx", vhdxPath)
+		return nil
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: newTestVolumeIDWithTargetName(t),
 	})
 
 	require.NoError(t, err)
@@ -1190,6 +1306,28 @@ func TestControllerPublishVolume_Success(t *testing.T) {
 	assert.Equal(t, "0", resp.PublishContext["lun"])
 }
 
+func TestControllerPublishVolume_UsesTargetNameWhenPresent(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.allowInitiatorFn = func(ctx context.Context, targetName, initiatorIQN string) error {
+		assert.Equal(t, "test-volume", targetName)
+		assert.Equal(t, "iqn.2024-01.com.example:node-001", initiatorIQN)
+		return nil
+	}
+
+	resp, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: newTestVolumeIDWithTargetName(t),
+		NodeId:   "iqn.2024-01.com.example:node-001",
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "iqn.1991-05.com.microsoft:win-storage-test-volume", resp.PublishContext["iqn"])
+}
+
 // ---------------------------------------------------------------------------
 // ControllerUnpublishVolume tests
 // ---------------------------------------------------------------------------
@@ -1214,6 +1352,24 @@ func TestControllerUnpublishVolume_Success(t *testing.T) {
 
 	resp, err := cs.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
 		VolumeId: newTestVolumeID(t),
+		NodeId:   "iqn.2024-01.com.example:node-001",
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+}
+
+func TestControllerUnpublishVolume_UsesTargetNameWhenPresent(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.denyInitiatorFn = func(ctx context.Context, targetName, initiatorIQN string) error {
+		assert.Equal(t, "test-volume", targetName)
+		assert.Equal(t, "iqn.2024-01.com.example:node-001", initiatorIQN)
+		return nil
+	}
+
+	resp, err := cs.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: newTestVolumeIDWithTargetName(t),
 		NodeId:   "iqn.2024-01.com.example:node-001",
 	})
 
@@ -1304,11 +1460,18 @@ func TestListVolumes_Empty(t *testing.T) {
 // GetCapacity tests
 // ---------------------------------------------------------------------------
 
-func TestGetCapacity_ParamsRequired(t *testing.T) {
-	cs, _, _ := newTestControllerServer(t)
-	_, err := cs.GetCapacity(context.Background(), &csi.GetCapacityRequest{})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "vhdxParentPath is required")
+func TestGetCapacity_ISCSIUsesBackendDefaultWhenPathMissing(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.getDirectoryFreeCapFn = func(ctx context.Context, parentDir string) (int64, error) {
+		assert.Empty(t, parentDir)
+		return 42, nil
+	}
+
+	resp, err := cs.GetCapacity(context.Background(), &csi.GetCapacityRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, int64(42), resp.AvailableCapacity)
 }
 
 func TestGetCapacity_Success(t *testing.T) {

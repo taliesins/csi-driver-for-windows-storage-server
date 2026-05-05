@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -29,7 +30,8 @@ import (
 
 var (
 	endpoint   = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
-	nodeID     = flag.String("nodeid", "", "node id")
+	nodeID     = flag.String("nodeid", os.Getenv("CSI_NODE_ID"), "node id")
+	nodeIDFile = flag.String("nodeid-file", os.Getenv("CSI_NODE_ID_FILE"), "file containing node id; supports InitiatorName=<iqn> files")
 	driverName = flag.String("drivername", os.Getenv("CSI_DRIVER_NAME"), "CSI driver name")
 	mode       = flag.String("mode", os.Getenv("CSI_DRIVER_MODE"), "driver mode: controller or node")
 
@@ -58,9 +60,17 @@ func handle() {
 		klog.Fatalf("invalid --mode: %v", err)
 	}
 
-	d := iscsi.NewDriver(*nodeID, *endpoint)
+	resolvedNodeID, err := resolveNodeID(*nodeID, *nodeIDFile)
+	if err != nil {
+		klog.Fatalf("invalid node id: %v", err)
+	}
+	if driverMode == iscsi.DriverModeNode && resolvedNodeID == "" {
+		klog.Fatalf("--nodeid or --nodeid-file is required in node mode")
+	}
+
+	d := iscsi.NewDriver(resolvedNodeID, *endpoint)
 	if *driverName != "" {
-		d = iscsi.NewNamedDriver(*driverName, *nodeID, *endpoint)
+		d = iscsi.NewNamedDriver(*driverName, resolvedNodeID, *endpoint)
 	}
 	d.RunWithOptions(iscsi.RunOptions{
 		Mode: driverMode,
@@ -74,6 +84,51 @@ func handle() {
 			RetryPeriod:    *leaderElectionRetryPeriod,
 		},
 	})
+}
+
+func resolveNodeID(explicitNodeID, nodeIDFile string) (string, error) {
+	if value := strings.TrimSpace(explicitNodeID); value != "" {
+		return value, nil
+	}
+	nodeIDFile = strings.TrimSpace(nodeIDFile)
+	if nodeIDFile == "" {
+		return "", nil
+	}
+	return readNodeIDFile(nodeIDFile)
+}
+
+func readNodeIDFile(path string) (string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if nodeID := parseNodeIDContent(string(content)); nodeID != "" {
+		return nodeID, nil
+	}
+	return "", fmt.Errorf("no node id found in %s", path)
+}
+
+func parseNodeIDContent(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if key, value, ok := strings.Cut(line, "="); ok {
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "initiatorname", "nodeid", "node_id":
+				return trimNodeIDValue(value)
+			default:
+				continue
+			}
+		}
+		return trimNodeIDValue(line)
+	}
+	return ""
+}
+
+func trimNodeIDValue(value string) string {
+	return strings.Trim(strings.TrimSpace(value), `"'`)
 }
 
 func envBoolDefault(name string, fallback bool) bool {

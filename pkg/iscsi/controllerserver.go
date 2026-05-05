@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -34,14 +35,14 @@ type ControllerServer struct {
 Assumptions / contracts:
 
 - cs.Driver.backend provides the following methods (see your WinRM backend):
-  EnsureTarget(ctx, targetIQN) error
+  EnsureTarget(ctx, targetName, targetIQN) (actualTargetIQN string, err error)
   CreateVirtualDisk(ctx, name, parentDir string, sizeBytes int64) (vhdxPath string, actualSize int64, err error)
-  MapDiskToTarget(ctx, targetIQN, vhdxPath string) (lun int32, err error)
-  UnmapDiskFromTarget(ctx, targetIQN, vhdxPath string) error
+  MapDiskToTarget(ctx, targetName, vhdxPath string) (lun int32, err error)
+  UnmapDiskFromTarget(ctx, targetName, vhdxPath string) error
   DeleteVirtualDisk(ctx, vhdxPath string) error
-  GetVolumeByName(ctx, name, parentDir string) (exists bool, vhdxPath string, sizeBytes int64, targetIQN string, lun int32, err error)
-  AllowInitiator(ctx, targetIQN, initiatorIQN string) error
-  DenyInitiator(ctx, targetIQN, initiatorIQN string) error
+  GetVolumeByName(ctx, name, parentDir string) (exists bool, vhdxPath string, sizeBytes int64, targetName string, targetIQN string, lun int32, err error)
+  AllowInitiator(ctx, targetName, initiatorIQN string) error
+  DenyInitiator(ctx, targetName, initiatorIQN string) error
   GetDirectoryFreeCapacity(ctx, parentDir string) (freeBytes int64, err error)
   // 03-snapshots
   CreateSnapshot(ctx, vhdxPath, description string) (SnapshotInfo, error)
@@ -51,7 +52,7 @@ Assumptions / contracts:
   // expansion + query
   ResizeVirtualDisk(ctx context.Context, vhdxPath string, newSizeBytes int64) (actualSizeBytes int64, err error)
   GetVolumeInfo(ctx context.Context, vhdxPath string) (VolumeInfo, error)
-  GetTargetInitiators(ctx context.Context, targetIQN string) ([]string, error)
+  GetTargetInitiators(ctx context.Context, targetName string) ([]string, error)
 */
 
 // ---------- helper types ----------
@@ -59,6 +60,7 @@ Assumptions / contracts:
 type volID struct {
 	VolumeName   string `json:"name"`
 	TargetPortal string `json:"targetPortal"` // host:port
+	TargetName   string `json:"targetName,omitempty"`
 	TargetIQN    string `json:"targetIQN"`
 	LUN          int32  `json:"lun"`
 	VHDXPath     string `json:"vhdxPath"`
@@ -84,6 +86,7 @@ type VolumeInfo struct {
 	VolumeName    string
 	Protocol      Protocol
 	TargetPortal  string
+	TargetName    string
 	TargetIQN     string
 	LUN           any
 	VHDXPath      string
@@ -213,6 +216,83 @@ func normalizeNfsPermission(value string) (string, error) {
 	}
 }
 
+func normalizeNfsAuthentication(value string) ([]string, error) {
+	rawValues := splitCSVParam(value)
+	if len(rawValues) == 0 {
+		return nil, nil
+	}
+	auth := make([]string, 0, len(rawValues))
+	seen := map[string]bool{}
+	for _, raw := range rawValues {
+		normalized, err := normalizeNfsAuthenticationFlavor(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[normalized] {
+			auth = append(auth, normalized)
+			seen[normalized] = true
+		}
+	}
+	return auth, nil
+}
+
+func normalizeNfsAuthenticationFlavor(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "sys":
+		return "sys", nil
+	case "krb5", "kerberos":
+		return "krb5", nil
+	case "krb5i", "kerberos-integrity":
+		return "krb5i", nil
+	case "krb5p", "kerberos-privacy":
+		return "krb5p", nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "parameter nfsAuthentication must contain only sys, krb5, krb5i, or krb5p")
+	}
+}
+
+func nfsKerberosAuthentication(value string) ([]string, string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, "", nil
+	}
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		if !parsed {
+			return nil, "", nil
+		}
+		return []string{"krb5"}, "krb5", nil
+	}
+	flavor, err := normalizeNfsAuthenticationFlavor(value)
+	if err != nil {
+		return nil, "", status.Errorf(codes.InvalidArgument, "parameter nfsKerberos must be a boolean or one of krb5, krb5i, krb5p")
+	}
+	if flavor == "sys" {
+		return nil, "", status.Errorf(codes.InvalidArgument, "parameter nfsKerberos must be a boolean or one of krb5, krb5i, krb5p")
+	}
+	return []string{flavor}, flavor, nil
+}
+
+func preferredNfsMountAuthentication(auth []string) string {
+	rank := map[string]int{"sys": 1, "krb5": 2, "krb5i": 3, "krb5p": 4}
+	best := ""
+	for _, value := range auth {
+		if rank[value] > rank[best] {
+			best = value
+		}
+	}
+	return best
+}
+
+func nfsAuthenticationParam(params map[string]string) string {
+	if v, ok := getStringParam(params, "nfsAuthentication"); ok {
+		return v
+	}
+	if v, ok := getStringParam(params, "nfsauthentication"); ok {
+		return v
+	}
+	return ""
+}
+
 func (cs *ControllerServer) fileShareBackendFromParams(params map[string]string) (string, error) {
 	defaultBackend := fileShareBackendDirectory
 	if cs.Driver != nil && cs.Driver.fileShareBackend != "" {
@@ -258,6 +338,19 @@ func fileShareVolumeID(name string, protocol Protocol, backend string, info Volu
 	return vid
 }
 
+func applyNfsOptionsToVolumeID(vid *VolumeID, opts NfsShareOptions) *VolumeID {
+	if vid == nil || vid.Protocol != ProtocolNFS {
+		return vid
+	}
+	if len(opts.Authentication) > 0 {
+		vid.NfsAuthentication = strings.Join(opts.Authentication, ",")
+	}
+	if opts.MountAuthentication != "" {
+		vid.NfsMountAuthentication = opts.MountAuthentication
+	}
+	return vid
+}
+
 func joinWindowsPath(parent, child string) string {
 	parent = strings.TrimRight(strings.TrimSpace(parent), `\/`)
 	child = strings.TrimLeft(strings.TrimSpace(child), `\/`)
@@ -295,6 +388,26 @@ func nfsOptionsFromParams(params map[string]string) (NfsShareOptions, error) {
 	if err != nil {
 		return NfsShareOptions{}, err
 	}
+	authentication, err := normalizeNfsAuthentication(nfsAuthenticationParam(params))
+	if err != nil {
+		return NfsShareOptions{}, err
+	}
+	mountAuthentication := ""
+	if v, ok := getStringParam(params, "nfsMountAuthentication"); ok {
+		mountAuthentication, err = normalizeNfsAuthenticationFlavor(v)
+		if err != nil {
+			return NfsShareOptions{}, status.Errorf(codes.InvalidArgument, "parameter nfsMountAuthentication must be one of sys, krb5, krb5i, or krb5p")
+		}
+	}
+	if len(authentication) == 0 {
+		authentication, mountAuthentication, err = nfsKerberosAuthentication(params["nfsKerberos"])
+		if err != nil {
+			return NfsShareOptions{}, err
+		}
+	}
+	if mountAuthentication == "" {
+		mountAuthentication = preferredNfsMountAuthentication(authentication)
+	}
 	clientType := strings.TrimSpace(params["nfsClientType"])
 	if clientType == "" {
 		clientType = "host"
@@ -303,7 +416,8 @@ func nfsOptionsFromParams(params map[string]string) (NfsShareOptions, error) {
 		ClientType:            clientType,
 		Permission:            permission,
 		AllowRootAccess:       allowRootAccess,
-		Authentication:        splitCSVParam(params["nfsAuthentication"]),
+		Authentication:        authentication,
+		MountAuthentication:   mountAuthentication,
 		AnonymousUID:          anonymousUID,
 		AnonymousGID:          anonymousGID,
 		LanguageEncoding:      strings.TrimSpace(params["nfsLanguageEncoding"]),
@@ -363,16 +477,28 @@ func (cs *ControllerServer) protocolFromParams(params map[string]string) (Protoc
 
 func decodeAnyVolumeID(id string) (*VolumeID, volID, error) {
 	if v, err := DecodeVolumeID(id); err == nil {
-		return v, volID{}, nil
+		return v, volID{
+			VolumeName:   v.Name,
+			TargetPortal: v.TargetPortal,
+			TargetName:   firstNonEmpty(v.TargetName, v.TargetIQN),
+			TargetIQN:    v.TargetIQN,
+			LUN:          int32(v.LUN),
+			VHDXPath:     v.VHDXPath,
+			SizeBytes:    v.CapacityBytes,
+		}, nil
 	}
 	legacy, err := decodeVolID(id)
 	if err != nil {
 		return nil, volID{}, err
 	}
+	if legacy.TargetName == "" {
+		legacy.TargetName = legacy.TargetIQN
+	}
 	return &VolumeID{
 		Name:          legacy.VolumeName,
 		Protocol:      ProtocolISCSI,
 		TargetPortal:  legacy.TargetPortal,
+		TargetName:    legacy.TargetName,
 		TargetIQN:     legacy.TargetIQN,
 		LUN:           int(legacy.LUN),
 		VHDXPath:      legacy.VHDXPath,
@@ -380,16 +506,46 @@ func decodeAnyVolumeID(id string) (*VolumeID, volID, error) {
 	}, legacy, nil
 }
 
+func iscsiTargetForVolume(params map[string]string, volName string) (targetName, targetIQN string) {
+	if iqnPrefix, ok := getStringParam(params, "iqnPrefix"); ok {
+		targetIQN = fmt.Sprintf("%s:%s", iqnPrefix, volName)
+		return targetIQN, targetIQN
+	}
+	return volName, ""
+}
+
+func targetNameFromVolID(id volID) string {
+	return firstNonEmpty(id.TargetName, id.TargetIQN)
+}
+
+func targetPortalAddress(targetPortal string, portalPort int) string {
+	targetPortal = strings.TrimSpace(targetPortal)
+	if targetPortal == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(targetPortal); err == nil {
+		return targetPortal
+	}
+	return net.JoinHostPort(targetPortal, strconv.Itoa(portalPort))
+}
+
 func volumeContextForVolumeID(v *VolumeID) map[string]string {
 	switch v.Protocol {
 	case ProtocolNFS:
-		return map[string]string{
+		ctx := map[string]string{
 			"protocol":      string(ProtocolNFS),
 			"server":        v.NfsServer,
 			"nfsServer":     v.NfsServer,
 			"exportPath":    v.NfsExportPath,
 			"nfsExportPath": v.NfsExportPath,
 		}
+		if v.NfsAuthentication != "" {
+			ctx["nfsAuthentication"] = v.NfsAuthentication
+		}
+		if v.NfsMountAuthentication != "" {
+			ctx["nfsMountAuthentication"] = v.NfsMountAuthentication
+		}
+		return ctx
 	case ProtocolSMB:
 		return map[string]string{
 			"protocol":     string(ProtocolSMB),
@@ -399,11 +555,15 @@ func volumeContextForVolumeID(v *VolumeID) map[string]string {
 			"smbShareName": v.SmbShareName,
 		}
 	default:
-		return map[string]string{
+		ctx := map[string]string{
 			"targetPortal": v.TargetPortal,
 			"iqn":          v.TargetIQN,
 			"lun":          strconv.Itoa(v.LUN),
 		}
+		if strings.TrimSpace(v.TargetName) != "" {
+			ctx["targetName"] = v.TargetName
+		}
+		return ctx
 	}
 }
 
@@ -462,21 +622,15 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		}
 		portalPort = p
 	}
-	parentDir, ok := getStringParam(params, "vhdxParentPath")
-	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "parameter vhdxParentPath is required")
-	}
-	iqnPrefix, ok := getStringParam(params, "iqnPrefix")
-	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "parameter iqnPrefix is required")
-	}
+	parentDir, _ := getStringParam(params, "vhdxParentPath")
 
 	size, err := requiredBytesFromRange(req.GetCapacityRange(), 1)
 	if err != nil {
 		return nil, err
 	}
 	volName := req.GetName()
-	targetIQN := fmt.Sprintf("%s:%s", iqnPrefix, volName)
+	targetName, requestedTargetIQN := iscsiTargetForVolume(params, volName)
+	targetPortalWithPort := targetPortalAddress(targetPortal, portalPort)
 
 	// Create from snapshot?
 	if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() != nil {
@@ -488,17 +642,22 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "ExportSnapshotAsVirtualDisk: %v", err)
 		}
-		if err := cs.Driver.backend.EnsureTarget(ctx, targetIQN); err != nil {
+		targetIQN, err := cs.Driver.backend.EnsureTarget(ctx, targetName, requestedTargetIQN)
+		if err != nil {
 			return nil, status.Errorf(codes.Internal, "EnsureTarget: %v", err)
 		}
-		lun, err := cs.Driver.backend.MapDiskToTarget(ctx, targetIQN, exportedPath)
+		if targetIQN == "" {
+			return nil, status.Errorf(codes.Internal, "EnsureTarget returned an empty target IQN for target %q", targetName)
+		}
+		lun, err := cs.Driver.backend.MapDiskToTarget(ctx, targetName, exportedPath)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "MapDiskToTarget(exported): %v", err)
 		}
 		vi, _ := cs.Driver.backend.GetVolumeInfo(ctx, exportedPath)
 		vid := encodeVolID(volID{
 			VolumeName:   volName,
-			TargetPortal: fmt.Sprintf("%s:%d", targetPortal, portalPort),
+			TargetPortal: targetPortalWithPort,
+			TargetName:   targetName,
 			TargetIQN:    targetIQN,
 			LUN:          lun,
 			VHDXPath:     exportedPath,
@@ -509,7 +668,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				VolumeId:      vid,
 				CapacityBytes: vi.SizeBytes,
 				VolumeContext: map[string]string{
-					"targetPortal": fmt.Sprintf("%s:%d", targetPortal, portalPort),
+					"targetPortal": targetPortalWithPort,
 					"iqn":          targetIQN,
 					"lun":          strconv.Itoa(int(lun)),
 					"source":       "snapshot",
@@ -520,7 +679,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	// Idempotency: already exists?
-	exists, vhdxPath, existingSize, existingTarget, existingLUN, err := cs.Driver.backend.GetVolumeByName(ctx, volName, parentDir)
+	exists, vhdxPath, existingSize, existingTargetName, existingTargetIQN, existingLUN, err := cs.Driver.backend.GetVolumeByName(ctx, volName, parentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetVolumeByName: %v", err)
 	}
@@ -528,14 +687,18 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		if size > 0 && existingSize > 0 && size > existingSize {
 			return nil, status.Errorf(codes.AlreadyExists, "volume %q exists smaller (%dB) than requested (%dB)", volName, existingSize, size)
 		}
-		if existingTarget == "" {
-			existingTarget = targetIQN
+		if existingTargetName == "" {
+			existingTargetName = targetName
 		}
-		if err := cs.Driver.backend.EnsureTarget(ctx, existingTarget); err != nil {
+		targetIQN, err := cs.Driver.backend.EnsureTarget(ctx, existingTargetName, firstNonEmpty(existingTargetIQN, requestedTargetIQN))
+		if err != nil {
 			return nil, status.Errorf(codes.Internal, "EnsureTarget(existing): %v", err)
 		}
+		if targetIQN == "" {
+			return nil, status.Errorf(codes.Internal, "EnsureTarget returned an empty target IQN for target %q", existingTargetName)
+		}
 		if existingLUN < 0 {
-			lun, err := cs.Driver.backend.MapDiskToTarget(ctx, existingTarget, vhdxPath)
+			lun, err := cs.Driver.backend.MapDiskToTarget(ctx, existingTargetName, vhdxPath)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "MapDiskToTarget(existing): %v", err)
 			}
@@ -543,8 +706,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		}
 		vid := encodeVolID(volID{
 			VolumeName:   volName,
-			TargetPortal: fmt.Sprintf("%s:%d", targetPortal, portalPort),
-			TargetIQN:    existingTarget,
+			TargetPortal: targetPortalWithPort,
+			TargetName:   existingTargetName,
+			TargetIQN:    targetIQN,
 			LUN:          existingLUN,
 			VHDXPath:     vhdxPath,
 			SizeBytes:    existingSize,
@@ -554,8 +718,8 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				VolumeId:      vid,
 				CapacityBytes: existingSize,
 				VolumeContext: map[string]string{
-					"targetPortal": fmt.Sprintf("%s:%d", targetPortal, portalPort),
-					"iqn":          existingTarget,
+					"targetPortal": targetPortalWithPort,
+					"iqn":          targetIQN,
 					"lun":          strconv.Itoa(int(existingLUN)),
 				},
 			},
@@ -567,17 +731,22 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "CreateVirtualDisk: %v", err)
 	}
-	if err := cs.Driver.backend.EnsureTarget(ctx, targetIQN); err != nil {
+	targetIQN, err := cs.Driver.backend.EnsureTarget(ctx, targetName, requestedTargetIQN)
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "EnsureTarget: %v", err)
 	}
-	lun, err := cs.Driver.backend.MapDiskToTarget(ctx, targetIQN, vhdxPath)
+	if targetIQN == "" {
+		return nil, status.Errorf(codes.Internal, "EnsureTarget returned an empty target IQN for target %q", targetName)
+	}
+	lun, err := cs.Driver.backend.MapDiskToTarget(ctx, targetName, vhdxPath)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "MapDiskToTarget: %v", err)
 	}
 
 	vid := encodeVolID(volID{
 		VolumeName:   volName,
-		TargetPortal: fmt.Sprintf("%s:%d", targetPortal, portalPort),
+		TargetPortal: targetPortalWithPort,
+		TargetName:   targetName,
 		TargetIQN:    targetIQN,
 		LUN:          lun,
 		VHDXPath:     vhdxPath,
@@ -588,7 +757,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			VolumeId:      vid,
 			CapacityBytes: actual,
 			VolumeContext: map[string]string{
-				"targetPortal": fmt.Sprintf("%s:%d", targetPortal, portalPort),
+				"targetPortal": targetPortalWithPort,
 				"iqn":          targetIQN,
 				"lun":          strconv.Itoa(int(lun)),
 			},
@@ -636,16 +805,13 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 		info.NfsServer = nfsServer
 	}
 	capacityBytes := maxInt64(info.CapacityBytes, size)
-	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolNFS, shareBackend, info, capacityBytes))
+	volumeID := applyNfsOptionsToVolumeID(fileShareVolumeID(name, ProtocolNFS, shareBackend, info, capacityBytes), nfsOpts)
+	vid := EncodeVolumeID(volumeID)
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: capacityBytes,
-			VolumeContext: volumeContextForVolumeID(&VolumeID{
-				Protocol:      ProtocolNFS,
-				NfsServer:     info.NfsServer,
-				NfsExportPath: info.NfsExportPath,
-			}),
+			VolumeContext: volumeContextForVolumeID(volumeID),
 			ContentSource: req.GetVolumeContentSource(),
 		},
 	}, nil
@@ -653,16 +819,13 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 
 func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, nfsServer string, size int64, nfsOpts NfsShareOptions) (*csi.CreateVolumeResponse, error) {
 	params := req.GetParameters()
-	vhdxParentDir, ok := getStringParam(params, "vhdxParentPath")
-	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "parameter vhdxParentPath is required when shareBackend=vhdx")
-	}
+	vhdxParentDir, _ := getStringParam(params, "vhdxParentPath")
 	sharePath := joinWindowsPath(shareParentDir, name)
 	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, shareParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetNfsShare: %v", err)
 	}
-	_, existingVHDXPath, existingSize, _, _, err := cs.Driver.backend.GetVolumeByName(ctx, name, vhdxParentDir)
+	_, existingVHDXPath, existingSize, _, _, _, err := cs.Driver.backend.GetVolumeByName(ctx, name, vhdxParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetVolumeByName: %v", err)
 	}
@@ -714,16 +877,13 @@ func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *
 		info.NfsServer = nfsServer
 	}
 	capacityBytes := maxInt64(info.CapacityBytes, size)
-	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolNFS, fileShareBackendVHDX, info, capacityBytes))
+	volumeID := applyNfsOptionsToVolumeID(fileShareVolumeID(name, ProtocolNFS, fileShareBackendVHDX, info, capacityBytes), nfsOpts)
+	vid := EncodeVolumeID(volumeID)
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: capacityBytes,
-			VolumeContext: volumeContextForVolumeID(&VolumeID{
-				Protocol:      ProtocolNFS,
-				NfsServer:     info.NfsServer,
-				NfsExportPath: info.NfsExportPath,
-			}),
+			VolumeContext: volumeContextForVolumeID(volumeID),
 			ContentSource: req.GetVolumeContentSource(),
 		},
 	}, nil
@@ -790,16 +950,13 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 
 func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, smbServer string, size int64, smbOpts SmbShareOptions) (*csi.CreateVolumeResponse, error) {
 	params := req.GetParameters()
-	vhdxParentDir, ok := getStringParam(params, "vhdxParentPath")
-	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "parameter vhdxParentPath is required when shareBackend=vhdx")
-	}
+	vhdxParentDir, _ := getStringParam(params, "vhdxParentPath")
 	sharePath := joinWindowsPath(shareParentDir, name)
 	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, shareParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetSmbShare: %v", err)
 	}
-	_, existingVHDXPath, existingSize, _, _, err := cs.Driver.backend.GetVolumeByName(ctx, name, vhdxParentDir)
+	_, existingVHDXPath, existingSize, _, _, _, err := cs.Driver.backend.GetVolumeByName(ctx, name, vhdxParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetVolumeByName: %v", err)
 	}
@@ -931,8 +1088,8 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 	// best-effort unmap + delete
-	if id.TargetIQN != "" && id.VHDXPath != "" {
-		if err := cs.Driver.backend.UnmapDiskFromTarget(ctx, id.TargetIQN, id.VHDXPath); err != nil {
+	if targetName := targetNameFromVolID(id); targetName != "" && id.VHDXPath != "" {
+		if err := cs.Driver.backend.UnmapDiskFromTarget(ctx, targetName, id.VHDXPath); err != nil {
 			klog.Warningf("UnmapDiskFromTarget: %v", err)
 		}
 	}
@@ -970,7 +1127,11 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	if !strings.HasPrefix(initiatorIQN, "iqn.") {
 		return nil, status.Errorf(codes.InvalidArgument, "node_id must be an initiator IQN, got %q", initiatorIQN)
 	}
-	if err := cs.Driver.backend.AllowInitiator(ctx, id.TargetIQN, initiatorIQN); err != nil {
+	targetName := targetNameFromVolID(id)
+	if targetName == "" || id.TargetIQN == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume_id is missing target name or target IQN")
+	}
+	if err := cs.Driver.backend.AllowInitiator(ctx, targetName, initiatorIQN); err != nil {
 		return nil, status.Errorf(codes.Internal, "AllowInitiator: %v", err)
 	}
 	return &csi.ControllerPublishVolumeResponse{
@@ -999,8 +1160,12 @@ func (cs *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
-	if err := cs.Driver.backend.DenyInitiator(ctx, id.TargetIQN, req.GetNodeId()); err != nil {
-		klog.Warningf("DenyInitiator: %v", err)
+	if targetName := targetNameFromVolID(id); targetName != "" {
+		if err := cs.Driver.backend.DenyInitiator(ctx, targetName, req.GetNodeId()); err != nil {
+			klog.Warningf("DenyInitiator: %v", err)
+		}
+	} else {
+		klog.Warningf("DenyInitiator: volume_id is missing target name")
 	}
 	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
@@ -1034,14 +1199,17 @@ func (cs *ControllerServer) ListVolumes(ctx context.Context, req *csi.ListVolume
 func (cs *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	params := req.GetParameters()
 	key := "vhdxParentPath"
+	required := false
 	if cs.Driver != nil && (cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB) {
 		key = "shareParentPath"
+		required = true
 		if cs.Driver.fileShareBackend == fileShareBackendVHDX {
 			key = "vhdxParentPath"
+			required = false
 		}
 	}
 	parentDir, ok := getStringParam(params, key)
-	if !ok {
+	if !ok && required {
 		return nil, status.Errorf(codes.InvalidArgument, "parameter %s is required", key)
 	}
 	free, err := cs.Driver.backend.GetDirectoryFreeCapacity(ctx, parentDir)
@@ -1251,7 +1419,7 @@ func (cs *ControllerServer) ControllerGetVolume(ctx context.Context, req *csi.Co
 	if vi.VHDXPath == "" {
 		return nil, status.Errorf(codes.NotFound, "volume not found")
 	}
-	published, _ := cs.Driver.backend.GetTargetInitiators(ctx, id.TargetIQN)
+	published, _ := cs.Driver.backend.GetTargetInitiators(ctx, targetNameFromVolID(id))
 
 	lunStr := volumeInfoLUNString(vi.LUN)
 	return &csi.ControllerGetVolumeResponse{

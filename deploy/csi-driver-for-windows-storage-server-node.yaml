@@ -71,15 +71,11 @@ spec:
             allowPrivilegeEscalation: true
           image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
           args:
-            - "--nodeid=$(NODE_ID)"
+            - "--nodeid-file=/host/etc/iscsi/initiatorname.iscsi"
             - "--endpoint=$(CSI_ENDPOINT)"
             - "--mode=node"
             - "--v=5"
           env:
-            - name: NODE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
             - name: CSI_ENDPOINT
               value: unix:///csi/csi.sock
           ports:

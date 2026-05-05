@@ -282,6 +282,30 @@ func mountOptionsFromContext(vc map[string]string) []string {
 	return opts
 }
 
+func firstContextValue(key string, contexts ...map[string]string) string {
+	for _, ctx := range contexts {
+		if value, ok := getStr(ctx, key); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func nfsMountAuthenticationFromContext(vc, pc map[string]string) (string, error) {
+	if value := firstContextValue("nfsMountAuthentication", vc, pc); value != "" {
+		return normalizeNfsAuthenticationFlavor(value)
+	}
+	raw := firstContextValue("nfsAuthentication", vc, pc)
+	if raw == "" {
+		raw = firstContextValue("nfsauthentication", vc, pc)
+	}
+	auth, err := normalizeNfsAuthentication(raw)
+	if err != nil {
+		return "", err
+	}
+	return preferredNfsMountAuthentication(auth), nil
+}
+
 func firstSecretValue(secrets map[string]string, keys ...string) (string, bool) {
 	for _, key := range keys {
 		if value, ok := getStr(secrets, key); ok {
@@ -349,6 +373,13 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 	case ProtocolNFS:
 		if version, ok := getStr(req.GetVolumeContext(), "nfsVersion"); ok {
 			opts = appendOptionIfMissing(opts, "vers=", "vers="+version)
+		}
+		authentication, err := nfsMountAuthenticationFromContext(req.GetVolumeContext(), pc)
+		if err != nil {
+			return nil, err
+		}
+		if authentication != "" {
+			opts = appendOptionIfMissing(opts, "sec=", "sec="+authentication)
 		}
 	case ProtocolSMB:
 		if version, ok := getStr(req.GetVolumeContext(), "smbVersion"); ok {

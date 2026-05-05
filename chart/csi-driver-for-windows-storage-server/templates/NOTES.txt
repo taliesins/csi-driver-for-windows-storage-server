@@ -3,10 +3,14 @@ Thank you for installing the csi-driver-for-windows-storage-server Helm chart!
 Your CSI driver has been deployed with:
 - Controller Deployment (cluster-wide volume operations)
 - Node DaemonSet (runs on every node for attach/mount)
+- CSIDriver attach enabled, so pod moves update Windows iSCSI target initiators
 
 Key resources created:
 - ServiceAccounts: separate for controller and node
 - ClusterRoles and ClusterRoleBindings for least-privilege RBAC
+
+Each Linux node that uses iSCSI must have a stable open-iscsi initiator name at:
+  {{ .Values.node.initiatorNamePath }}
 
 To verify the deployment:
 
