@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "csi-driver-for-windows-storage-server.fullname" . }}-node
+  name: {{ include "csi-driver-for-windows-storage-server.nodeName" . }}
   labels:
     {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
 spec:

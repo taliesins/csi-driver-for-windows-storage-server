@@ -1,12 +1,26 @@
 {{/*
+Create the name of the controller resources
+*/}}
+{{- define "csi-driver-for-windows-storage-server.controllerName" -}}
+{{- printf "%s-controller" ((include "csi-driver-for-windows-storage-server.fullname" .) | trunc 52 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
 Create the name of the controller service account to use
 */}}
 {{- define "csi-driver-for-windows-storage-server.controllerServiceAccountName" -}}
 {{- if .Values.controller.serviceAccount.create }}
-{{- default (printf "%s-controller" (include "csi-driver-for-windows-storage-server.fullname" .)) .Values.controller.serviceAccount.name }}
+{{- default (include "csi-driver-for-windows-storage-server.controllerName" .) .Values.controller.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.controller.serviceAccount.name }}
 {{- end }}
+{{- end }}
+
+{{/*
+Create the name of the node resources
+*/}}
+{{- define "csi-driver-for-windows-storage-server.nodeName" -}}
+{{- printf "%s-node" ((include "csi-driver-for-windows-storage-server.fullname" .) | trunc 58 | trimSuffix "-") }}
 {{- end }}
 
 {{/*
@@ -14,11 +28,19 @@ Create the name of the node service account to use
 */}}
 {{- define "csi-driver-for-windows-storage-server.nodeServiceAccountName" -}}
 {{- if .Values.node.serviceAccount.create }}
-{{- default (printf "%s-node" (include "csi-driver-for-windows-storage-server.fullname" .)) .Values.node.serviceAccount.name }}
+{{- default (include "csi-driver-for-windows-storage-server.nodeName" .) .Values.node.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.node.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Create the name of the WinRM credentials secret to use
+*/}}
+{{- define "csi-driver-for-windows-storage-server.winrmSecretName" -}}
+{{- default (printf "%s-winrm" ((include "csi-driver-for-windows-storage-server.fullname" .) | trunc 57 | trimSuffix "-")) .Values.winrm.existingSecret }}
+{{- end }}
+
 {{/*
 Expand the name of the csi-driver-for-windows-storage-server chart.
 */}}

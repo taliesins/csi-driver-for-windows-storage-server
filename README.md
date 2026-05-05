@@ -269,6 +269,33 @@ Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-s
 image:
   tag: 1.0.0
   pullPolicy: Always
+
+winrm:
+  host: win-storage.lab.local
+  port: 5986
+  tls: true
+  insecure: true
+  existingSecret: csi-driver-winrm
+```
+
+When using `winrm.existingSecret`, create the WinRM credentials secret before installing:
+
+```sh
+kubectl -n kube-system create secret generic csi-driver-winrm \
+  --from-literal=WINRM_USER=csi-winrm-test \
+  --from-literal=WINRM_PASSWORD='<password>'
+```
+
+Alternatively, let the chart create the credentials secret:
+
+```yaml
+winrm:
+  host: win-storage.lab.local
+  port: 5986
+  tls: true
+  insecure: true
+  user: csi-winrm-test
+  password: "<password>"
 ```
 
 ```sh

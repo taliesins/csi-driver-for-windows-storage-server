@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "csi-driver-for-windows-storage-server.fullname" . }}-controller
+  name: {{ include "csi-driver-for-windows-storage-server.controllerName" . }}
   labels:
     {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
 spec:
@@ -24,6 +24,32 @@ spec:
           env:
             - name: CSI_ENDPOINT
               value: "unix:///csi/csi.sock"
+            - name: WINRM_HOST
+              value: {{ required "winrm.host is required" .Values.winrm.host | quote }}
+            - name: WINRM_PORT
+              value: {{ .Values.winrm.port | quote }}
+            - name: WINRM_TLS
+              value: {{ .Values.winrm.tls | quote }}
+            - name: WINRM_INSECURE
+              value: {{ .Values.winrm.insecure | quote }}
+            - name: WINRM_AUTH
+              value: {{ .Values.winrm.auth | quote }}
+            - name: WINRM_TIMEOUT
+              value: {{ .Values.winrm.timeout | quote }}
+            {{- if .Values.winrm.psImport }}
+            - name: WINRM_PS_IMPORT
+              value: {{ .Values.winrm.psImport | quote }}
+            {{- end }}
+            - name: WINRM_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "csi-driver-for-windows-storage-server.winrmSecretName" . }}
+                  key: WINRM_USER
+            - name: WINRM_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "csi-driver-for-windows-storage-server.winrmSecretName" . }}
+                  key: WINRM_PASSWORD
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
