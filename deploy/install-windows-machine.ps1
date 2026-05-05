@@ -18,7 +18,9 @@ HTTPS, iSCSI target traffic, SMB, and NFS.
   -NfsRemoteAddress 10.244.0.0/16 `
   -StoragePath E:\iSCSIVirtualDisks `
   -SharePath E:\CSIFileShares `
-  -CertDnsName storage01.example.com
+  -CertDnsName storage01.example.com `
+  -EnableNfsKerberos `
+  -NfsKerberosFlavor krb5p
 
 .NOTES
 Run this script in an elevated PowerShell session on the Windows Server that
@@ -43,6 +45,10 @@ param(
     [Parameter()]
     [ValidateNotNullOrEmpty()]
     [string]$NfsRemoteAddress = "Any",
+
+    [Parameter()]
+    [ValidateSet("krb5", "krb5i", "krb5p")]
+    [string]$NfsKerberosFlavor = "krb5",
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
@@ -89,6 +95,12 @@ param(
 
     [Parameter()]
     [switch]$SkipNfsFirewall,
+
+    [Parameter()]
+    [switch]$EnableNfsKerberos,
+
+    [Parameter()]
+    [switch]$SkipNfsKerberosDomainCheck,
 
     [Parameter()]
     [switch]$ForceNewCertificate,
@@ -317,6 +329,52 @@ function Enable-WinRMBasicAuth {
     Set-Item -Path WSMan:\localhost\Shell\MaxMemoryPerShellMB -Value 1024
 }
 
+function Assert-CommandParameter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ParameterName
+    )
+
+    $command = Get-Command -Name $CommandName -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "Required command '$CommandName' was not found."
+    }
+    if (-not $command.Parameters.ContainsKey($ParameterName)) {
+        throw "Command '$CommandName' does not support parameter '$ParameterName'. Update the Windows Server NFS feature before enabling NFS Kerberos."
+    }
+}
+
+function Assert-NfsKerberosPrerequisites {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Flavor,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$SkipDomainCheck
+    )
+
+    if ($SkipNfs.IsPresent) {
+        throw "NFS Kerberos support requires NFS to be installed. Remove -SkipNfs or do not use -EnableNfsKerberos."
+    }
+
+    Import-Module NFS -ErrorAction Stop
+    Assert-CommandParameter -CommandName "New-NfsShare" -ParameterName "Authentication"
+
+    if (-not $SkipDomainCheck) {
+        $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        if (-not $computerSystem.PartOfDomain) {
+            throw "NFS Kerberos requires this Windows Server to be domain joined. Use -SkipNfsKerberosDomainCheck only for isolated script validation."
+        }
+        Write-Host "NFS Kerberos domain check passed: $($computerSystem.Domain)"
+    }
+
+    Write-Host "NFS Kerberos prerequisites are available for flavor '$Flavor'."
+    Write-Host "Ensure the storage server has the required NFS service principal/SPN and that Linux nodes have Kerberos client config and credentials."
+}
+
 if ($AllowedClient -eq "Any") {
     Write-Warning "AllowedClient is 'Any'. Restrict WinRM HTTPS to your dev/CI source address outside an isolated lab."
 }
@@ -369,6 +427,10 @@ if (-not $SkipSmb.IsPresent) {
 
 Write-Host "Ensuring VHDX storage directory '$StoragePath' exists..."
 New-Item -ItemType Directory -Force -Path $StoragePath | Out-Null
+$resolvedStoragePath = (Get-Item -LiteralPath $StoragePath).FullName
+Write-Host "Setting machine CSI_VHDX_PARENT_PATH to '$resolvedStoragePath'..."
+[Environment]::SetEnvironmentVariable("CSI_VHDX_PARENT_PATH", $resolvedStoragePath, "Machine")
+$env:CSI_VHDX_PARENT_PATH = $resolvedStoragePath
 
 Write-Host "Ensuring file-share backing directory '$SharePath' exists..."
 New-Item -ItemType Directory -Force -Path $SharePath | Out-Null
@@ -463,6 +525,12 @@ if (-not $SkipNfs.IsPresent -and -not $SkipNfsFirewall.IsPresent) {
         -RemoteAddress $NfsRemoteAddress
 }
 
+if ($EnableNfsKerberos.IsPresent) {
+    Assert-NfsKerberosPrerequisites `
+        -Flavor $NfsKerberosFlavor `
+        -SkipDomainCheck:$SkipNfsKerberosDomainCheck.IsPresent
+}
+
 if (-not $SkipChecks) {
     Write-Host ""
     Write-Host "Installed Windows features:"
@@ -503,5 +571,11 @@ Write-Host "  WINRM_USER=$WinRMUser"
 Write-Host "  WINRM_PORT=5986"
 Write-Host "  WINRM_TLS=true"
 Write-Host "  WINRM_INSECURE=true"
+Write-Host "  CSI_VHDX_PARENT_PATH=$resolvedStoragePath"
 Write-Host "  WINRM_TEST_PARENT_DIR=$StoragePath"
 Write-Host "  WINRM_TEST_SHARE_DIR=$SharePath"
+if ($EnableNfsKerberos.IsPresent) {
+    Write-Host "  NFS_KERBEROS_AUTHENTICATION=$NfsKerberosFlavor"
+    Write-Host "  StorageClass nfsAuthentication=$NfsKerberosFlavor"
+    Write-Host "  StorageClass nfsMountAuthentication=$NfsKerberosFlavor"
+}

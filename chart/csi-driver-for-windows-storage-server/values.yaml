@@ -13,11 +13,23 @@ controller:
 
 # Node-specific ServiceAccount
 node:
+  initiatorNamePath: /etc/iscsi/initiatorname.iscsi
   serviceAccount:
     create: true
     automount: true
     annotations: {}
     name: ""
+
+sidecars:
+  logLevel: 2
+  provisioner:
+    image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
+  attacher:
+    image: registry.k8s.io/sig-storage/csi-attacher:v4.4.2
+  nodeDriverRegistrar:
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0
+  livenessProbe:
+    image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
 
 # Default values for csi-driver-for-windows-storage-server
 image:

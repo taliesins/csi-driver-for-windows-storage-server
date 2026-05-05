@@ -24,6 +24,13 @@ and cleanup.
   -NfsClientNames "*" `
   -SmbChangeAccess "Everyone" `
   -KeepResources
+
+.EXAMPLE
+.\deploy\validate-windows-machine.ps1 `
+  -StoragePath E:\iSCSIVirtualDisks `
+  -SharePath E:\CSIFileShares `
+  -NfsKerberos `
+  -NfsKerberosFlavor krb5p
 #>
 
 [CmdletBinding()]
@@ -65,6 +72,14 @@ param(
     [string[]]$NfsClientNames = @("*"),
 
     [Parameter()]
+    [ValidateSet("sys", "krb5", "krb5i", "krb5p")]
+    [string[]]$NfsAuthentication = @(),
+
+    [Parameter()]
+    [ValidateSet("krb5", "krb5i", "krb5p")]
+    [string]$NfsKerberosFlavor = "krb5",
+
+    [Parameter()]
     [ValidateNotNullOrEmpty()]
     [string[]]$SmbChangeAccess = @("Everyone"),
 
@@ -80,6 +95,12 @@ param(
 
     [Parameter()]
     [switch]$SkipSmbChecks,
+
+    [Parameter()]
+    [switch]$NfsKerberos,
+
+    [Parameter()]
+    [switch]$SkipNfsKerberosDomainCheck,
 
     [Parameter()]
     [switch]$KeepResources
@@ -105,6 +126,17 @@ Open an elevated Windows PowerShell session or run:
 
 if ($ResizedSizeBytes -le $InitialSizeBytes) {
     throw "ResizedSizeBytes must be greater than InitialSizeBytes."
+}
+
+$nfsAuthenticationValues = @($NfsAuthentication | ForEach-Object { $_.ToLowerInvariant() })
+if ($NfsKerberos.IsPresent) {
+    $nfsAuthenticationValues = @($NfsKerberosFlavor.ToLowerInvariant())
+}
+$nfsKerberosAuthenticationRequested = @(
+    $nfsAuthenticationValues | Where-Object { @("krb5", "krb5i", "krb5p") -contains $_ }
+).Count -gt 0
+if ($nfsKerberosAuthenticationRequested -and $SkipNfsChecks.IsPresent) {
+    throw "NFS Kerberos validation requires NFS checks. Remove -SkipNfsChecks or do not request Kerberos NFS authentication."
 }
 
 $runID = [guid]::NewGuid().ToString("N").Substring(0, 12)
@@ -146,6 +178,42 @@ function Assert-CommandAvailable {
     param([Parameter(Mandatory = $true)][string]$Name)
     if (-not (Get-Command -Name $Name -ErrorAction SilentlyContinue)) {
         throw "Required command '$Name' was not found."
+    }
+}
+
+function Assert-CommandParameter {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ParameterName
+    )
+
+    $command = Get-Command -Name $CommandName -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "Required command '$CommandName' was not found."
+    }
+    if (-not $command.Parameters.ContainsKey($ParameterName)) {
+        throw "Command '$CommandName' does not support parameter '$ParameterName'. Update the Windows Server NFS feature before enabling NFS Kerberos."
+    }
+}
+
+function Assert-NfsKerberosPrerequisites {
+    param(
+        [Parameter(Mandatory = $true)]
+        [bool]$SkipDomainCheck
+    )
+
+    Import-Module NFS -ErrorAction Stop
+    Assert-CommandParameter -CommandName "New-NfsShare" -ParameterName "Authentication"
+
+    if (-not $SkipDomainCheck) {
+        $computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+        if (-not $computerSystem.PartOfDomain) {
+            throw "NFS Kerberos requires this Windows Server to be domain joined. Use -SkipNfsKerberosDomainCheck only for isolated script validation."
+        }
+        Write-Ok "NFS Kerberos domain check passed: $($computerSystem.Domain)"
     }
 }
 
@@ -486,7 +554,14 @@ try {
         foreach ($cmdlet in $requiredNfsCmdlets) {
             Assert-CommandAvailable -Name $cmdlet
         }
+        if ($nfsAuthenticationValues.Count -gt 0) {
+            Assert-CommandParameter -CommandName "New-NfsShare" -ParameterName "Authentication"
+        }
         Write-Ok "All required NFS cmdlets are available."
+
+        if ($nfsKerberosAuthenticationRequested) {
+            Assert-NfsKerberosPrerequisites -SkipDomainCheck:$SkipNfsKerberosDomainCheck.IsPresent
+        }
     }
 
     if (-not $SkipSmbChecks.IsPresent) {
@@ -678,9 +753,23 @@ Then rerun this validator.
         }
         Write-Ok "Created and resized NFS backing directory quota."
 
-        New-NfsShare -Name $NfsShareName -Path $nfsSharePath -Permission "readwrite" -AllowRootAccess $true | Out-Null
+        $newNfsShareParams = @{
+            Name = $NfsShareName
+            Path = $nfsSharePath
+            Permission = "readwrite"
+            AllowRootAccess = $true
+        }
+        if ($nfsAuthenticationValues.Count -gt 0) {
+            $newNfsShareParams["Authentication"] = $nfsAuthenticationValues
+        }
+
+        New-NfsShare @newNfsShareParams | Out-Null
         [void]$createdNfsShares.Add($NfsShareName)
-        Write-Ok "Created NFS share."
+        if ($nfsAuthenticationValues.Count -gt 0) {
+            Write-Ok "Created NFS share with authentication: $($nfsAuthenticationValues -join ', ')"
+        } else {
+            Write-Ok "Created NFS share."
+        }
 
         foreach ($clientName in $NfsClientNames) {
             Grant-NfsSharePermission `
@@ -699,6 +788,17 @@ Then rerun this validator.
         }
         if ($nfsShare.Path -ne $nfsSharePath) {
             throw "NFS share '$NfsShareName' path '$($nfsShare.Path)' did not match expected '$nfsSharePath'."
+        }
+        if ($nfsAuthenticationValues.Count -gt 0) {
+            if (-not ($nfsShare.PSObject.Properties.Name -contains "Authentication")) {
+                throw "NFS share '$NfsShareName' did not return Authentication metadata."
+            }
+            $actualNfsAuthentication = @($nfsShare.Authentication | ForEach-Object { $_.ToString().ToLowerInvariant() })
+            foreach ($expectedNfsAuthentication in $nfsAuthenticationValues) {
+                if ($actualNfsAuthentication -notcontains $expectedNfsAuthentication) {
+                    throw "NFS share '$NfsShareName' authentication '$($actualNfsAuthentication -join ', ')' did not include '$expectedNfsAuthentication'."
+                }
+            }
         }
         Write-Ok "Read back NFS share metadata."
 

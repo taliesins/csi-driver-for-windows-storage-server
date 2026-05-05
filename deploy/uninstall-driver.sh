@@ -17,31 +17,68 @@
 set -euo pipefail
 
 ver="master"
-if [[ "$#" -gt 0 ]]; then
-  ver="$1"
-fi
+use_local=false
+
+usage() {
+  cat <<EOF
+Usage: $0 [version] [local] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
+
+Kerberos flags are accepted so install and uninstall commands can use the same
+argument set; uninstall deletes the daemonsets and does not need separate
+Kerberos cleanup.
+EOF
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    local|--local)
+      use_local=true
+      ;;
+    --nfs-kerberos|--kerberos)
+      ;;
+    --nfs-kerberos-flavor|--kerberos-flavor)
+      if [[ "$#" -lt 2 ]]; then
+        echo "missing value for $1" >&2
+        usage >&2
+        exit 1
+      fi
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      ver="$1"
+      ;;
+  esac
+  shift
+done
 
 repo="https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/$ver/deploy"
-if [[ "$#" -gt 1 ]]; then
-  if [[ "$2" == *"local"* ]]; then
-    echo "use local deploy"
-    repo="./deploy"
-  fi
+if [[ "$use_local" == true ]]; then
+  echo "use local deploy"
+  repo="./deploy"
 fi
 
-if [ "$ver" != "master" ]; then
-  repo="$repo/$ver"
-fi
+delete_manifest() {
+  kubectl delete -f "$repo/$1" --ignore-not-found
+}
 
 echo "Uninstalling Windows storage CSI drivers, version: $ver ..."
-kubectl delete -f "$repo/csi-smb-vhdx-for-windows-node.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-smb-for-windows-node.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-nfs-vhdx-for-windows-node.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-nfs-for-windows-node.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-iscsi-for-windows-node.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-smb-vhdx-for-windows-driverinfo.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-smb-for-windows-driverinfo.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-nfs-vhdx-for-windows-driverinfo.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-nfs-for-windows-driverinfo.yaml" --ignore-not-found
-kubectl delete -f "$repo/csi-iscsi-for-windows-driverinfo.yaml" --ignore-not-found
+delete_manifest "csi-smb-vhdx-for-windows-node.yaml"
+delete_manifest "csi-smb-for-windows-node.yaml"
+delete_manifest "csi-nfs-vhdx-for-windows-node.yaml"
+delete_manifest "csi-nfs-for-windows-node.yaml"
+delete_manifest "csi-driver-for-windows-storage-server-node.yaml"
+delete_manifest "csi-smb-vhdx-for-windows-driverinfo.yaml"
+delete_manifest "csi-smb-for-windows-driverinfo.yaml"
+delete_manifest "csi-nfs-vhdx-for-windows-driverinfo.yaml"
+delete_manifest "csi-nfs-for-windows-driverinfo.yaml"
+delete_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
 echo 'Windows storage CSI drivers uninstalled successfully.'

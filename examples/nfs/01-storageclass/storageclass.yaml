@@ -13,3 +13,10 @@ parameters:
   nfsClientName: "*"
   nfsPermission: "readwrite"
   nfsAllowRootAccess: "true"
+  # Optional: enable Windows Server for NFS Kerberos authentication. Supported
+  # values are sys, krb5, krb5i, and krb5p. The node mounts with the strongest
+  # Kerberos flavor listed unless nfsMountAuthentication is set explicitly.
+  # nfsAuthentication: "krb5p"
+  # nfsMountAuthentication: "krb5p"
+  # Shortcut equivalent to nfsAuthentication/nfsMountAuthentication: "krb5".
+  # nfsKerberos: "true"

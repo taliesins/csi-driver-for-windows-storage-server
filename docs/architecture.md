@@ -11,11 +11,14 @@ graph TB
         end
 
         subgraph ControllerPod["Controller Pod<br/>(deployment-controller.yaml)"]
+            Provisioner["csi-provisioner"]
+            Attacher["csi-attacher"]
             Controller["ControllerServer<br/>(controllerserver.go)"]
             WinRMBackend["WinRMBackend<br/>(backend_winrm.go)"]
         end
 
         subgraph NodePod["Node Pod<br/>(daemonset-node.yaml)"]
+            Registrar["node-driver-registrar"]
             NodeServer["NodeServer<br/>(nodeserver.go)"]
             iSCSILib["iscsilib<br/>(iscsi.go / iscsiadm.go)"]
             Mounter["mount-utils<br/>(FormatAndMount / ResizeFs)"]
@@ -28,8 +31,12 @@ graph TB
     end
 
     APIServer --> CSIDriver
-    APIServer ==>|CSI gRPC| Controller
-    APIServer ==>|CSI gRPC| NodeServer
+    APIServer --> Provisioner
+    APIServer --> Attacher
+    APIServer --> Registrar
+    Provisioner ==>|CSI gRPC| Controller
+    Attacher ==>|CSI gRPC| Controller
+    APIServer ==>|CSI gRPC via kubelet| NodeServer
 
     Controller -->|WinRM (HTTP-ES)| WinRMBackend
     WinRMBackend -->|PowerShell / IscsiTarget| iSCSITarget
@@ -96,12 +103,15 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant K as Kubernetes
+    participant A as csi-attacher
     participant C as ControllerServer
     participant W as WinRMBackend
     participant WS as Windows iSCSI Server
 
-    K->>C: CreateVolume(req)
-    C->>C: validate params<br/>(targetPortal, iqnPrefix, vhdxParentPath)
+    K->>C: CreateVolume(req)<br/>(via csi-provisioner)
+    C->>C: validate params<br/>(targetPortal)
+    C->>W: resolve vhdxParentPath<br/>(optional)
+    C->>C: choose targetName<br/>(iqnPrefix optional)
 
     alt volume from snapshot
         C->>W: ExportSnapshotAsVirtualDisk(snapshotID)
@@ -118,14 +128,21 @@ sequenceDiagram
         end
     end
 
-    C->>W: EnsureTarget(targetIQN)
-    W->>WS: PowerShell: New-IscsiServerTarget (if not exists)
+    C->>W: EnsureTarget(targetName, requestedTargetIQN)
+    W->>WS: PowerShell: New/Set-IscsiServerTarget
+    W-->>C: actual TargetIqn
 
-    C->>W: MapDiskToTarget(targetIQN, vhdxPath)
+    C->>W: MapDiskToTarget(targetName, vhdxPath)
     W->>WS: PowerShell: Add-IscsiVirtualDiskTargetMapping
     WS-->>W: LUN (0)
 
     C-->>K: CreateVolumeResponse<br/>(targetPortal, iqn, lun, volumeID)
+
+    K->>A: VolumeAttachment(nodeID = initiator IQN)
+    A->>C: ControllerPublishVolume(volumeID, nodeID)
+    C->>W: AllowInitiator(targetName, nodeID)
+    W->>WS: PowerShell: Set-IscsiServerTarget -InitiatorIds
+    C-->>A: PublishContext<br/>(targetPortal, iqn, lun)
 ```
 
 ## Node Attach / Mount Flow
@@ -183,7 +200,8 @@ volumeID = base64.RawURLEncode(
   {
     "name":     <volumeName>,
     "targetPortal": <host:port>,
-    "targetIQN":  <iqnPrefix>:<volumeName>,
+    "targetName": <Windows TargetName>,
+    "targetIQN":  <Windows TargetIqn>,
     "lun":        0,
     "vhdxPath":   <Windows server path>,
     "sizeBytes":  <capacity>

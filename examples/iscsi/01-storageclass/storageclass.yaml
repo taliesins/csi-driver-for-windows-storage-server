@@ -7,13 +7,21 @@ reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-  vhdxParentPath: "E:\\iSCSIVirtualDisks"
-  iqnPrefix: "iqn.2025-08.lab.example"
   targetPortal: "win-storage.lab.local"
-  portalPort: "3260"
+  # Optional: portalPort defaults to 3260.
+  # portalPort: "3260"
+  # Optional: vhdxParentPath defaults to the Windows server's
+  # CSI_VHDX_PARENT_PATH value, or %SystemDrive%\iSCSIVirtualDisks.
+  # vhdxParentPath: "E:\\iSCSIVirtualDisks"
+  # Optional: set iqnPrefix to force target IQNs like
+  # iqn.2025-08.lab.example:<volumeName>. If omitted, Windows generates the
+  # TargetIqn and the driver returns that value to the node.
 
-  csi.storage.k8s.io/fstype: "xfs"
+  # Optional: filesystem type defaults to ext4.
+  # csi.storage.k8s.io/fstype: "xfs"
 
-  csi.storage.k8s.io/node-stage-secret-name: "iscsi-chap"
-  csi.storage.k8s.io/node-stage-secret-namespace: "${pvc.namespace}"
+  # Optional CHAP credentials. Leave unset unless the Windows iSCSI target
+  # requires CHAP for node login.
+  # csi.storage.k8s.io/node-stage-secret-name: "iscsi-chap"
+  # csi.storage.k8s.io/node-stage-secret-namespace: "${pvc.namespace}"
   # iface: "default"

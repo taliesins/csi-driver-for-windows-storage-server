@@ -13,18 +13,33 @@ spec:
       labels:
         {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 8 }}
     spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/os: linux
       serviceAccountName: {{ include "csi-driver-for-windows-storage-server.nodeServiceAccountName" . }}
       containers:
-        - name: node-driver
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+        - name: liveness-probe
+          image: {{ .Values.sidecars.livenessProbe.image | quote }}
           args:
-            - --endpoint=$(CSI_ENDPOINT)
-            - --nodeid=$(KUBE_NODE_NAME)
-            - --mode=node
+            - --csi-address=/csi/csi.sock
+            - --probe-timeout=3s
+            - --health-port=29753
+            - --v={{ .Values.sidecars.logLevel }}
+          ports:
+            - containerPort: 29753
+              name: healthz
+              protocol: TCP
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: node-driver-registrar
+          image: {{ .Values.sidecars.nodeDriverRegistrar.image | quote }}
+          args:
+            - --v={{ .Values.sidecars.logLevel }}
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/iscsi.csi.windows.microsoft.com/csi.sock
           env:
-            - name: CSI_ENDPOINT
-              value: "unix:///csi/csi.sock"
             - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:
@@ -32,8 +47,89 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+        - name: node-driver
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - SYS_ADMIN
+            allowPrivilegeEscalation: true
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --endpoint=$(CSI_ENDPOINT)
+            - --nodeid-file=/host{{ .Values.node.initiatorNamePath }}
+            - --mode=node
+            - --v={{ .Values.sidecars.logLevel }}
+          env:
+            - name: CSI_ENDPOINT
+              value: "unix:///csi/csi.sock"
+            - name: CSI_DRIVER_RUN_DIR
+              value: /var/run
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: mountpoint-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: Bidirectional
+            - name: host-dev
+              mountPath: /dev
+            - name: host-root
+              mountPath: /host
+              mountPropagation: HostToContainer
+            - name: chroot-iscsiadm
+              mountPath: /sbin/iscsiadm
+              subPath: iscsiadm
+            - name: iscsi-csi-run-dir
+              mountPath: /var/run/iscsi.csi.windows.microsoft.com
       volumes:
         - name: socket-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/csi-driver-for-windows-storage-server
+            path: /var/lib/kubelet/plugins/iscsi.csi.windows.microsoft.com
             type: DirectoryOrCreate
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+        - name: chroot-iscsiadm
+          configMap:
+            defaultMode: 0555
+            name: {{ include "csi-driver-for-windows-storage-server.nodeName" . }}-iscsiadm
+        - name: iscsi-csi-run-dir
+          hostPath:
+            path: /var/run/iscsi.csi.windows.microsoft.com
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "csi-driver-for-windows-storage-server.nodeName" . }}-iscsiadm
+  labels:
+    {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
+data:
+  iscsiadm: |
+    #!/bin/sh
+    if [ -x /host/sbin/iscsiadm ]; then
+      chroot /host /sbin/iscsiadm "$@"
+    elif [ -x /host/usr/local/sbin/iscsiadm ]; then
+      chroot /host /usr/local/sbin/iscsiadm "$@"
+    elif [ -x /host/bin/iscsiadm ]; then
+      chroot /host /bin/iscsiadm "$@"
+    elif [ -x /host/usr/local/bin/iscsiadm ]; then
+      chroot /host /usr/local/bin/iscsiadm "$@"
+    else
+      chroot /host iscsiadm "$@"
+    fi

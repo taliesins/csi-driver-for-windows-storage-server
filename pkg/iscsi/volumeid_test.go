@@ -19,6 +19,7 @@ func TestVolumeIDRoundTrip(t *testing.T) {
 				Name:          "k8s-csi-test-volume-001",
 				Protocol:      ProtocolISCSI,
 				TargetPortal:  "10.0.0.1:3260",
+				TargetName:    "k8s-csi-test-volume-001",
 				TargetIQN:     "iqn.2024-01.com.example:csi-iscsi-001",
 				LUN:           0,
 				VHDXPath:      "D:\\vhdx\\k8s-csi-test-volume-001.vhdx",
@@ -93,6 +94,7 @@ func TestVolumeIDRoundTrip(t *testing.T) {
 			assert.Equal(t, tt.vol.Name, decoded.Name, "Name mismatch")
 			assert.Equal(t, tt.vol.Protocol, decoded.Protocol, "Protocol mismatch")
 			assert.Equal(t, tt.vol.TargetPortal, decoded.TargetPortal, "TargetPortal mismatch")
+			assert.Equal(t, tt.vol.TargetName, decoded.TargetName, "TargetName mismatch")
 			assert.Equal(t, tt.vol.TargetIQN, decoded.TargetIQN, "TargetIQN mismatch")
 			assert.Equal(t, tt.vol.LUN, decoded.LUN, "LUN mismatch")
 			assert.Equal(t, tt.vol.VHDXPath, decoded.VHDXPath, "VHDXPath mismatch")

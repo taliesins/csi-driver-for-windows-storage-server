@@ -333,8 +333,9 @@ func TestNodeStageVolume_NFS(t *testing.T) {
 			"nfsExportPath": "/export/test",
 		},
 		VolumeContext: map[string]string{
-			"mountOptions": "nfsvers=4.1,hard",
-			"nfsVersion":   "4.2",
+			"mountOptions":      "nfsvers=4.1,hard",
+			"nfsVersion":        "4.2",
+			"nfsAuthentication": "sys,krb5p",
 		},
 	})
 
@@ -345,6 +346,7 @@ func TestNodeStageVolume_NFS(t *testing.T) {
 	assert.Equal(t, "nfs", mockMount.formatAndMounts[0].fsType)
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "nfsvers=4.1")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "vers=4.2")
+	assert.Contains(t, mockMount.formatAndMounts[0].options, "sec=krb5p")
 }
 
 func TestNodeStageVolume_SMB(t *testing.T) {

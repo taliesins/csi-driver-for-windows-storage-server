@@ -65,7 +65,9 @@ func TestWinRMBackendIntegration_VirtualDiskLifecycle(t *testing.T) {
 		cleanupIntegrationTarget(t, backend, targetIQN)
 	})
 
-	require.NoError(t, backend.EnsureTarget(ctx, targetIQN))
+	actualTargetIQN, err := backend.EnsureTarget(ctx, targetIQN, targetIQN)
+	require.NoError(t, err)
+	require.Equal(t, targetIQN, actualTargetIQN)
 
 	vhdxPath, sizeBytes, err := backend.CreateVirtualDisk(ctx, resourceName, parentDir, integrationInitialDiskSizeBytes)
 	require.NoError(t, err)
@@ -76,12 +78,13 @@ func TestWinRMBackendIntegration_VirtualDiskLifecycle(t *testing.T) {
 		cleanupIntegrationVirtualDisk(t, backend, vhdxPath)
 	})
 
-	exists, gotPath, gotSize, gotTarget, gotLUN, err := backend.GetVolumeByName(ctx, resourceName, parentDir)
+	exists, gotPath, gotSize, gotTargetName, gotTargetIQN, gotLUN, err := backend.GetVolumeByName(ctx, resourceName, parentDir)
 	require.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, vhdxPath, gotPath)
 	assert.GreaterOrEqual(t, gotSize, integrationInitialDiskSizeBytes)
-	assert.Empty(t, gotTarget)
+	assert.Empty(t, gotTargetName)
+	assert.Empty(t, gotTargetIQN)
 	assert.Equal(t, int32(-1), gotLUN)
 
 	resizedBytes, err := backend.ResizeVirtualDisk(ctx, vhdxPath, integrationResizedDiskSizeBytes)
@@ -92,12 +95,13 @@ func TestWinRMBackendIntegration_VirtualDiskLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(0), lun)
 
-	exists, gotPath, gotSize, gotTarget, gotLUN, err = backend.GetVolumeByName(ctx, resourceName, parentDir)
+	exists, gotPath, gotSize, gotTargetName, gotTargetIQN, gotLUN, err = backend.GetVolumeByName(ctx, resourceName, parentDir)
 	require.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, vhdxPath, gotPath)
 	assert.GreaterOrEqual(t, gotSize, integrationResizedDiskSizeBytes)
-	assert.Equal(t, targetIQN, gotTarget)
+	assert.Equal(t, targetIQN, gotTargetName)
+	assert.Equal(t, targetIQN, gotTargetIQN)
 	assert.Equal(t, int32(0), gotLUN)
 
 	info, err := backend.GetVolumeInfo(ctx, vhdxPath)
@@ -133,7 +137,7 @@ func TestWinRMBackendIntegration_VirtualDiskLifecycle(t *testing.T) {
 
 	require.NoError(t, backend.DeleteVirtualDisk(ctx, vhdxPath))
 
-	exists, _, _, _, _, err = backend.GetVolumeByName(ctx, resourceName, parentDir)
+	exists, _, _, _, _, _, err = backend.GetVolumeByName(ctx, resourceName, parentDir)
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
