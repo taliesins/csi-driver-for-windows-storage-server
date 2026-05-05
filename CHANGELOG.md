@@ -1,3 +1,9 @@
+## [1.1.1](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.1.0...v1.1.1) (2026-05-05)
+
+### Bug Fixes
+
+* Supports multiple node clusters for iSCSI ([746ec27](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/746ec276564a733929d23cfc46f19dd002d8e39b))
+
 ## [1.1.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.0.1...v1.1.0) (2026-05-05)
 
 ### Features
