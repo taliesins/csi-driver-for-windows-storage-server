@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.0.0...v1.0.1) (2026-05-05)
+
+### Bug Fixes
+
+* Create secret for credentials for WinRM client ([3623af9](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/3623af92b2aac496ddaf6040c3a566f67bdeac52))
+* Create secret for credentials for WinRM client ([0a90521](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/0a90521d6a6ba3a4b7c32a8ccfc8d0b0809ecec6))
+
 ## 1.0.0 (2026-05-04)
 
 ### Bug Fixes
