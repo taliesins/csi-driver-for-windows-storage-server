@@ -1,5 +1,10 @@
 # Controller-specific ServiceAccount
 controller:
+  replicas: 1
+  leaderElection:
+    leaseDuration: 15s
+    renewDeadline: 10s
+    retryPeriod: 2s
   serviceAccount:
     create: true
     automount: true

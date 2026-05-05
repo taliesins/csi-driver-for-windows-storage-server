@@ -11,17 +11,17 @@ Key resources created:
 To verify the deployment:
 
 1. Check controller pod status:
-  kubectl get pods -l app.kubernetes.io/component=controller -n {{ .Release.Namespace }}
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
 
 2. Check node pods (should be one per node):
-  kubectl get pods -l app.kubernetes.io/component=node -n {{ .Release.Namespace }}
+  kubectl get daemonset {{ include "csi-driver-for-windows-storage-server.nodeName" . }} -n {{ .Release.Namespace }}
 
 3. Check RBAC and ServiceAccounts:
   kubectl get serviceaccounts,clusterroles,clusterrolebindings -n {{ .Release.Namespace }} | grep iscsi
 
 4. To see logs for troubleshooting:
-  kubectl logs -l app.kubernetes.io/component=controller -n {{ .Release.Namespace }}
-  kubectl logs -l app.kubernetes.io/component=node -n {{ .Release.Namespace }}
+  kubectl logs deployment/{{ include "csi-driver-for-windows-storage-server.controllerName" . }} -n {{ .Release.Namespace }}
+  kubectl logs daemonset/{{ include "csi-driver-for-windows-storage-server.nodeName" . }} -n {{ .Release.Namespace }}
 
 To use the driver, create a StorageClass referencing this CSI driver and then create PVCs as needed. See the examples/ directory for sample manifests.
 

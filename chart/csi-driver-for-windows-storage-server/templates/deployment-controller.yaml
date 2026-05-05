@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.controller.replicas }}
   selector:
     matchLabels:
       {{- include "csi-driver-for-windows-storage-server.selectorLabels" . | nindent 6 }}
@@ -21,35 +21,30 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --endpoint=$(CSI_ENDPOINT)
+            - --mode=controller
+            {{- if gt (int .Values.controller.replicas) 1 }}
+            - --leader-election=true
+            - --leader-election-name={{ include "csi-driver-for-windows-storage-server.controllerName" . }}
+            - --leader-election-namespace=$(POD_NAMESPACE)
+            - --leader-election-identity=$(POD_NAME)
+            - --leader-election-lease-duration={{ .Values.controller.leaderElection.leaseDuration }}
+            - --leader-election-renew-deadline={{ .Values.controller.leaderElection.renewDeadline }}
+            - --leader-election-retry-period={{ .Values.controller.leaderElection.retryPeriod }}
+            {{- end }}
           env:
             - name: CSI_ENDPOINT
               value: "unix:///csi/csi.sock"
-            - name: WINRM_HOST
-              value: {{ required "winrm.host is required" .Values.winrm.host | quote }}
-            - name: WINRM_PORT
-              value: {{ .Values.winrm.port | quote }}
-            - name: WINRM_TLS
-              value: {{ .Values.winrm.tls | quote }}
-            - name: WINRM_INSECURE
-              value: {{ .Values.winrm.insecure | quote }}
-            - name: WINRM_AUTH
-              value: {{ .Values.winrm.auth | quote }}
-            - name: WINRM_TIMEOUT
-              value: {{ .Values.winrm.timeout | quote }}
-            {{- if .Values.winrm.psImport }}
-            - name: WINRM_PS_IMPORT
-              value: {{ .Values.winrm.psImport | quote }}
+            {{- if gt (int .Values.controller.replicas) 1 }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             {{- end }}
-            - name: WINRM_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "csi-driver-for-windows-storage-server.winrmSecretName" . }}
-                  key: WINRM_USER
-            - name: WINRM_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "csi-driver-for-windows-storage-server.winrmSecretName" . }}
-                  key: WINRM_PASSWORD
+            {{- include "csi-driver-for-windows-storage-server.winrmEnv" . | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

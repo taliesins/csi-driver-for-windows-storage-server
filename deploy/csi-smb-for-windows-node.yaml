@@ -54,6 +54,7 @@ spec:
           args:
             - --nodeid=$(NODE_ID)
             - --endpoint=$(CSI_ENDPOINT)
+            - --mode=node
             - --drivername=smb.csi.windows.microsoft.com
             - --v=5
           env:

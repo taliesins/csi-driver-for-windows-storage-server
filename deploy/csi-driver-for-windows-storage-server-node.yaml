@@ -73,6 +73,7 @@ spec:
           args:
             - "--nodeid=$(NODE_ID)"
             - "--endpoint=$(CSI_ENDPOINT)"
+            - "--mode=node"
             - "--v=5"
           env:
             - name: NODE_ID

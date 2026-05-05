@@ -222,6 +222,71 @@ func TestParseBoolDefault(t *testing.T) {
 	}
 }
 
+func TestParseDriverMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    DriverMode
+		wantErr bool
+	}{
+		{name: "controller", input: "controller", want: DriverModeController},
+		{name: "node", input: "node", want: DriverModeNode},
+		{name: "trims and lowercases", input: " Controller ", want: DriverModeController},
+		{name: "empty", input: "", wantErr: true},
+		{name: "unknown", input: "all", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseDriverMode(tt.input)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestLeaderElectionConfigWithDefaults(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "kube-system")
+	t.Setenv("POD_NAME", "controller-0")
+
+	d := NewDriver("node-001", "unix:///var/run/csi/csi.sock")
+	got, err := (LeaderElectionConfig{}).withDefaults(d)
+	require.NoError(t, err)
+
+	assert.Equal(t, d.name, got.LeaseName)
+	assert.Equal(t, "kube-system", got.LeaseNamespace)
+	assert.Equal(t, "controller-0", got.Identity)
+	assert.Equal(t, defaultLeaderElectionLeaseDuration, got.LeaseDuration)
+	assert.Equal(t, defaultLeaderElectionRenewDeadline, got.RenewDeadline)
+	assert.Equal(t, defaultLeaderElectionRetryPeriod, got.RetryPeriod)
+}
+
+func TestLeaderElectionConfigValidation(t *testing.T) {
+	d := NewDriver("node-001", "unix:///var/run/csi/csi.sock")
+
+	t.Run("missing namespace", func(t *testing.T) {
+		t.Setenv("POD_NAMESPACE", "")
+		_, err := (LeaderElectionConfig{Identity: "controller-0"}).withDefaults(d)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "namespace")
+	})
+
+	t.Run("invalid duration ordering", func(t *testing.T) {
+		_, err := (LeaderElectionConfig{
+			LeaseNamespace: "kube-system",
+			Identity:       "controller-0",
+			LeaseDuration:  10 * time.Second,
+			RenewDeadline:  10 * time.Second,
+			RetryPeriod:    2 * time.Second,
+		}).withDefaults(d)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "lease duration")
+	})
+}
+
 func clearWinRMEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
@@ -305,6 +370,7 @@ func TestNewWinRMBackendFromEnv_CustomPortAndErrors(t *testing.T) {
 
 func TestIdentityServer(t *testing.T) {
 	d := NewDriver("node-001", "unix:///var/run/csi/csi.sock")
+	d.mode = DriverModeController
 	ids := NewDefaultIdentityServer(d)
 	require.Equal(t, d, ids.Driver)
 
@@ -321,6 +387,16 @@ func TestIdentityServer(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, caps.Capabilities, 1)
 	assert.Equal(t, csi.PluginCapability_Service_CONTROLLER_SERVICE, caps.Capabilities[0].GetService().GetType())
+}
+
+func TestIdentityServer_NodeModeDoesNotAdvertiseControllerService(t *testing.T) {
+	d := NewDriver("node-001", "unix:///var/run/csi/csi.sock")
+	d.mode = DriverModeNode
+	ids := NewDefaultIdentityServer(d)
+
+	caps, err := ids.GetPluginCapabilities(context.Background(), &csi.GetPluginCapabilitiesRequest{})
+	require.NoError(t, err)
+	assert.Empty(t, caps.Capabilities)
 }
 
 func TestIdentityServer_GetPluginInfoErrors(t *testing.T) {
@@ -430,14 +506,95 @@ func TestDriverRunWiresBackendAndServers(t *testing.T) {
 	})
 
 	d := NewDriver("node-001", "tcp://127.0.0.1:10000")
-	d.Run()
+	d.Run(DriverModeController)
 
 	assert.Same(t, backend, d.backend)
+	assert.Equal(t, DriverModeController, d.mode)
 	assert.Equal(t, "tcp://127.0.0.1:10000", fakeServer.endpoint)
 	assert.True(t, fakeServer.waited)
 	assert.IsType(t, &IdentityServer{}, fakeServer.ids)
 	assert.IsType(t, &ControllerServer{}, fakeServer.cs)
+	assert.Nil(t, fakeServer.ns)
+}
+
+func TestDriverRunNodeModeDoesNotInitializeBackend(t *testing.T) {
+	fakeServer := &fakeNonBlockingGRPCServer{}
+	t.Setenv(driverRunDirEnv, t.TempDir())
+
+	originalBackendFromEnv := newBackendFromEnvForRun
+	originalServerFactory := newNonBlockingGRPCServerForRun
+	newBackendFromEnvForRun = func() (Backend, error) {
+		t.Fatal("node mode must not initialize the WinRM backend")
+		return nil, nil
+	}
+	newNonBlockingGRPCServerForRun = func() NonBlockingGRPCServer {
+		return fakeServer
+	}
+	t.Cleanup(func() {
+		newBackendFromEnvForRun = originalBackendFromEnv
+		newNonBlockingGRPCServerForRun = originalServerFactory
+	})
+
+	d := NewDriver("node-001", "tcp://127.0.0.1:10000")
+	d.Run(DriverModeNode)
+
+	assert.Nil(t, d.backend)
+	assert.Equal(t, DriverModeNode, d.mode)
+	assert.Equal(t, "tcp://127.0.0.1:10000", fakeServer.endpoint)
+	assert.True(t, fakeServer.waited)
+	assert.IsType(t, &IdentityServer{}, fakeServer.ids)
+	assert.Nil(t, fakeServer.cs)
 	assert.IsType(t, &nodeServer{}, fakeServer.ns)
+}
+
+func TestDriverRunControllerModeWithLeaderElection(t *testing.T) {
+	backend := &mockBackend{}
+	fakeServer := &fakeNonBlockingGRPCServer{}
+	t.Setenv(driverRunDirEnv, t.TempDir())
+
+	var captured LeaderElectionConfig
+	originalBackendFromEnv := newBackendFromEnvForRun
+	originalServerFactory := newNonBlockingGRPCServerForRun
+	originalLeaderElection := runLeaderElectionForRun
+	newBackendFromEnvForRun = func() (Backend, error) {
+		return backend, nil
+	}
+	newNonBlockingGRPCServerForRun = func() NonBlockingGRPCServer {
+		return fakeServer
+	}
+	runLeaderElectionForRun = func(ctx context.Context, config LeaderElectionConfig, run func(context.Context)) error {
+		captured = config
+		run(context.Background())
+		return nil
+	}
+	t.Cleanup(func() {
+		newBackendFromEnvForRun = originalBackendFromEnv
+		newNonBlockingGRPCServerForRun = originalServerFactory
+		runLeaderElectionForRun = originalLeaderElection
+	})
+
+	d := NewDriver("node-001", "tcp://127.0.0.1:10000")
+	d.RunWithOptions(RunOptions{
+		Mode: DriverModeController,
+		LeaderElection: LeaderElectionConfig{
+			Enabled:        true,
+			LeaseName:      "csi-controller",
+			LeaseNamespace: "kube-system",
+			Identity:       "controller-0",
+			LeaseDuration:  30 * time.Second,
+			RenewDeadline:  20 * time.Second,
+			RetryPeriod:    5 * time.Second,
+		},
+	})
+
+	assert.Equal(t, "csi-controller", captured.LeaseName)
+	assert.Equal(t, "kube-system", captured.LeaseNamespace)
+	assert.Equal(t, "controller-0", captured.Identity)
+	assert.Same(t, backend, d.backend)
+	assert.Equal(t, DriverModeController, d.mode)
+	assert.IsType(t, &IdentityServer{}, fakeServer.ids)
+	assert.IsType(t, &ControllerServer{}, fakeServer.cs)
+	assert.Nil(t, fakeServer.ns)
 }
 
 func TestDriverRunDirectoryUsesConfiguredBaseDir(t *testing.T) {

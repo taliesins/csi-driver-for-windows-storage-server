@@ -77,8 +77,10 @@ $ make build
 
 ```console
 $ cd $GOPATH/src/github.com/taliesins/csi-driver-for-windows-storage-server
-$ ./_output/csiplugin --endpoint tcp://127.0.0.1:10000 --nodeid CSINode -v=5 &
+$ ./_output/csiplugin --endpoint tcp://127.0.0.1:10000 --nodeid CSINode --mode=node -v=5 &
 ```
+
+Use `--mode=node` for node RPCs such as stage, publish, unpublish, and node info. Use `--mode=controller` on a separate endpoint when testing controller RPCs; controller mode requires `WINRM_HOST`, `WINRM_USER`, and `WINRM_PASSWORD`.
 
 - Get plugin info
 
@@ -106,7 +108,8 @@ iscsitestvol
 - Validate volume capabilities
 
 ```console
-$ csc controller validate-volume-capabilities --endpoint "$endpoint" --cap "$cap" "$volumeid"
+$ ./_output/csiplugin --endpoint tcp://127.0.0.1:10001 --mode=controller -v=5 &
+$ csc controller validate-volume-capabilities --endpoint tcp://127.0.0.1:10001 --cap "$cap" "$volumeid"
 ```
 
 - Get NodeID

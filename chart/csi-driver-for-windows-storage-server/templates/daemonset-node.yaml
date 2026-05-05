@@ -21,6 +21,7 @@ spec:
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --nodeid=$(KUBE_NODE_NAME)
+            - --mode=node
           env:
             - name: CSI_ENDPOINT
               value: "unix:///csi/csi.sock"

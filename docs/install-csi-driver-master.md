@@ -6,10 +6,15 @@ The chart is published as an OCI artifact to GHCR at `oci://ghcr.io/taliesins/he
 
 ### Install from GHCR
 
+WinRM connection details are required for the controller pod. Node pods do not receive these credentials.
+
 ```console
 helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system \
-  --create-namespace
+  --create-namespace \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
 ```
 
 ### Specify a version
@@ -18,7 +23,10 @@ helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/
 helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system \
   --create-namespace \
-  --version 0.1.0
+  --version 0.1.0 \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
 ```
 
 ### Customize values
@@ -29,9 +37,23 @@ Override any value from [`values.yaml`](../chart/csi-driver-for-windows-storage-
 helm install csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
   --namespace kube-system \
   --create-namespace \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>' \
   --set image.tag=v0.2.0 \
   --set image.pullPolicy=Always
 ```
+
+Controller leader election is enabled automatically when `controller.replicas` is greater than `1`:
+
+```console
+helm upgrade csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
+  --namespace kube-system \
+  --reuse-values \
+  --set controller.replicas=2
+```
+
+With one controller replica, the chart does not add leader-election arguments or Lease RBAC.
 
 ### Verify the installation
 
@@ -45,7 +67,8 @@ kubectl get pods -n kube-system -l app.kubernetes.io/instance=csi-driver-for-win
 ```console
 # Upgrade
 helm upgrade csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server \
-  --namespace kube-system
+  --namespace kube-system \
+  --reuse-values
 
 # Uninstall
 helm uninstall csi-driver-for-windows-storage-server -n kube-system
@@ -58,7 +81,10 @@ For development or air-gapped environments, you can install from the local chart
 ```console
 helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
   --namespace kube-system \
-  --create-namespace
+  --create-namespace \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
 ```
 
 Customize image tag or pull policy:
@@ -66,6 +92,9 @@ Customize image tag or pull policy:
 ```console
 helm install csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
   --namespace kube-system \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>' \
   --set image.tag=v0.2.0 \
   --set image.pullPolicy=Always
 ```
@@ -82,7 +111,8 @@ Upgrade or uninstall:
 ```console
 # Upgrade
 helm upgrade csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server \
-  --namespace kube-system
+  --namespace kube-system \
+  --reuse-values
 
 # Uninstall
 helm uninstall csi-driver-for-windows-storage-server -n kube-system
