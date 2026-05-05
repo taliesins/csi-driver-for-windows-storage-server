@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.0.1...v1.1.0) (2026-05-05)
+
+### Features
+
+* Add leader election if there are two instances of the controller ([bf41f49](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/bf41f493e63be1474a519c1015f02171bf8849fa))
+
 ## [1.0.1](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.0.0...v1.0.1) (2026-05-05)
 
 ### Bug Fixes
