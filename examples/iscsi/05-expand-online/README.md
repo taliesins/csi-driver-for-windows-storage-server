@@ -1,6 +1,6 @@
 # iSCSI Online Volume Expansion
 
-Increase `PVC/apps/db-data` from 200Gi to 300Gi. The controller grows the VHDX;
+Increase `PVC/apps/db-data` from 1Gi to 2Gi. The controller grows the VHDX;
 the node rescans iSCSI and grows the filesystem online.
 
 ## Patch
@@ -8,7 +8,7 @@ the node rescans iSCSI and grows the filesystem online.
 ```bash
 kubectl -n apps patch pvc db-data \
   --type merge \
-  -p '{"spec":{"resources":{"requests":{"storage":"300Gi"}}}}'
+  -p '{"spec":{"resources":{"requests":{"storage":"2Gi"}}}}'
 ```
 
 Watch events and capacity:

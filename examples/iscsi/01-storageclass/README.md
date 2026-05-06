@@ -14,9 +14,19 @@ Windows-generated `TargetIqn`, and passes that IQN to the node for login. Set
 resolves the path on the Windows server from `CSI_VHDX_PARENT_PATH`; if that is
 not set, it falls back to `%SystemDrive%\iSCSIVirtualDisks`.
 
-`csi.storage.k8s.io/node-stage-secret-name` and
-`csi.storage.k8s.io/node-stage-secret-namespace` are optional for iSCSI. Set
-them only when the Windows iSCSI target requires CHAP.
+CHAP is optional for iSCSI. To have the driver configure both sides, set the
+same Secret for `csi.storage.k8s.io/provisioner-secret-name`,
+`csi.storage.k8s.io/controller-publish-secret-name`, and
+`csi.storage.k8s.io/node-stage-secret-name`. The controller uses the
+provisioner/controller-publish secret to configure Windows target CHAP and
+reverse CHAP. The node uses the node-stage secret for the Linux open-iscsi
+login.
+
+Windows target CHAP uses `node.session.auth.username`,
+`node.session.auth.password`, and optionally `node.session.auth.username_in` /
+`node.session.auth.password_in` for reverse CHAP. Discovery CHAP keys configure
+Linux open-iscsi discovery only; Windows Server iSCSI target CHAP is configured
+per target.
 
 ## Apply
 

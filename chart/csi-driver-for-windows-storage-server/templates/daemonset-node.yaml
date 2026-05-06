@@ -1,44 +1,52 @@
+{{- $root := . -}}
+{{- range $key, $driver := .Values.drivers }}
+{{- if $driver.enabled }}
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "csi-driver-for-windows-storage-server.nodeName" . }}
+  name: {{ include "csi-driver-for-windows-storage-server.driverNodeName" (dict "root" $root "key" $key) }}
   labels:
-    {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
+    {{- include "csi-driver-for-windows-storage-server.labels" $root | nindent 4 }}
+    app.kubernetes.io/csi-driver: {{ $key | quote }}
+    app.kubernetes.io/component: "node"
 spec:
   selector:
     matchLabels:
-      {{- include "csi-driver-for-windows-storage-server.selectorLabels" . | nindent 6 }}
+      {{- include "csi-driver-for-windows-storage-server.driverSelectorLabels" (dict "root" $root "key" $key "component" "node") | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 8 }}
+        {{- include "csi-driver-for-windows-storage-server.labels" $root | nindent 8 }}
+        app.kubernetes.io/csi-driver: {{ $key | quote }}
+        app.kubernetes.io/component: "node"
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       nodeSelector:
         kubernetes.io/os: linux
-      serviceAccountName: {{ include "csi-driver-for-windows-storage-server.nodeServiceAccountName" . }}
+      serviceAccountName: {{ include "csi-driver-for-windows-storage-server.nodeServiceAccountName" $root }}
       containers:
         - name: liveness-probe
-          image: {{ .Values.sidecars.livenessProbe.image | quote }}
+          image: {{ $root.Values.sidecars.livenessProbe.image | quote }}
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
-            - --health-port=29753
-            - --v={{ .Values.sidecars.logLevel }}
+            - --health-port={{ $driver.livenessPort }}
+            - --v={{ $root.Values.sidecars.logLevel }}
           ports:
-            - containerPort: 29753
+            - containerPort: {{ $driver.livenessPort }}
               name: healthz
               protocol: TCP
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
         - name: node-driver-registrar
-          image: {{ .Values.sidecars.nodeDriverRegistrar.image | quote }}
+          image: {{ $root.Values.sidecars.nodeDriverRegistrar.image | quote }}
           args:
-            - --v={{ .Values.sidecars.logLevel }}
+            - --v={{ $root.Values.sidecars.logLevel }}
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path=/var/lib/kubelet/plugins/iscsi.csi.windows.microsoft.com/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/{{ $driver.name }}/csi.sock
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -56,14 +64,25 @@ spec:
               add:
                 - SYS_ADMIN
             allowPrivilegeEscalation: true
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default $root.Chart.AppVersion }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
           args:
             - --endpoint=$(CSI_ENDPOINT)
-            - --nodeid-file=/host{{ .Values.node.initiatorNamePath }}
+            {{- if $driver.needsIscsi }}
+            - --nodeid-file=/host{{ $root.Values.node.initiatorNamePath }}
+            {{- else }}
+            - --nodeid=$(NODE_ID)
+            {{- end }}
             - --mode=node
-            - --v={{ .Values.sidecars.logLevel }}
+            - --drivername={{ $driver.name }}
+            - --v={{ $root.Values.sidecars.logLevel }}
           env:
+            {{- if not $driver.needsIscsi }}
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- end }}
             - name: CSI_ENDPOINT
               value: "unix:///csi/csi.sock"
             - name: CSI_DRIVER_RUN_DIR
@@ -74,20 +93,24 @@ spec:
             - name: mountpoint-dir
               mountPath: /var/lib/kubelet
               mountPropagation: Bidirectional
+            {{- if $driver.needsIscsi }}
             - name: host-dev
               mountPath: /dev
+            {{- end }}
             - name: host-root
               mountPath: /host
               mountPropagation: HostToContainer
+            {{- if $driver.needsIscsi }}
             - name: chroot-iscsiadm
               mountPath: /sbin/iscsiadm
               subPath: iscsiadm
-            - name: iscsi-csi-run-dir
-              mountPath: /var/run/iscsi.csi.windows.microsoft.com
+            {{- end }}
+            - name: csi-run-dir
+              mountPath: /var/run/{{ $driver.name }}
       volumes:
         - name: socket-dir
           hostPath:
-            path: /var/lib/kubelet/plugins/iscsi.csi.windows.microsoft.com
+            path: /var/lib/kubelet/plugins/{{ $driver.name }}
             type: DirectoryOrCreate
         - name: mountpoint-dir
           hostPath:
@@ -97,28 +120,38 @@ spec:
           hostPath:
             path: /var/lib/kubelet/plugins_registry
             type: DirectoryOrCreate
+        {{- if $driver.needsIscsi }}
         - name: host-dev
           hostPath:
             path: /dev
+        {{- end }}
         - name: host-root
           hostPath:
             path: /
             type: Directory
+        {{- if $driver.needsIscsi }}
         - name: chroot-iscsiadm
           configMap:
             defaultMode: 0555
-            name: {{ include "csi-driver-for-windows-storage-server.nodeName" . }}-iscsiadm
-        - name: iscsi-csi-run-dir
+            name: {{ include "csi-driver-for-windows-storage-server.driverNodeName" (dict "root" $root "key" $key) }}-iscsiadm
+        {{- end }}
+        - name: csi-run-dir
           hostPath:
-            path: /var/run/iscsi.csi.windows.microsoft.com
+            path: /var/run/{{ $driver.name }}
             type: DirectoryOrCreate
+{{- end }}
+{{- end }}
+{{- $iscsi := index .Values.drivers "iscsi" -}}
+{{- if and $iscsi $iscsi.enabled }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "csi-driver-for-windows-storage-server.nodeName" . }}-iscsiadm
+  name: {{ include "csi-driver-for-windows-storage-server.driverNodeName" (dict "root" . "key" "iscsi") }}-iscsiadm
   labels:
     {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
+    app.kubernetes.io/csi-driver: "iscsi"
+    app.kubernetes.io/component: "node"
 data:
   iscsiadm: |
     #!/bin/sh
@@ -133,3 +166,4 @@ data:
     else
       chroot /host iscsiadm "$@"
     fi
+{{- end }}

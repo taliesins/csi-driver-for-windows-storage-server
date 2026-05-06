@@ -24,6 +24,29 @@ Create the name of the node resources
 {{- end }}
 
 {{/*
+Create the name of a controller Deployment for one CSI driver.
+*/}}
+{{- define "csi-driver-for-windows-storage-server.driverControllerName" -}}
+{{- printf "%s-%s-controller" ((include "csi-driver-for-windows-storage-server.fullname" .root) | trunc 44 | trimSuffix "-") .key | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create the name of a node DaemonSet for one CSI driver.
+*/}}
+{{- define "csi-driver-for-windows-storage-server.driverNodeName" -}}
+{{- printf "%s-%s-node" ((include "csi-driver-for-windows-storage-server.fullname" .root) | trunc 50 | trimSuffix "-") .key | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Labels/selectors scoped to one rendered CSI driver instance.
+*/}}
+{{- define "csi-driver-for-windows-storage-server.driverSelectorLabels" -}}
+{{ include "csi-driver-for-windows-storage-server.selectorLabels" .root }}
+app.kubernetes.io/csi-driver: {{ .key | quote }}
+app.kubernetes.io/component: {{ .component | quote }}
+{{- end }}
+
+{{/*
 Create the name of the node service account to use
 */}}
 {{- define "csi-driver-for-windows-storage-server.nodeServiceAccountName" -}}

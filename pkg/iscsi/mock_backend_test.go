@@ -35,6 +35,12 @@ func (m *MockBackend) EnsureTarget(ctx context.Context, targetName, targetIQN st
 	return args.String(0), args.Error(1)
 }
 
+// ConfigureTargetChap mocks ConfigureTargetChap.
+func (m *MockBackend) ConfigureTargetChap(ctx context.Context, targetName string, opts TargetChapOptions) error {
+	args := m.Called(ctx, targetName, opts)
+	return args.Error(0)
+}
+
 // CreateVirtualDisk mocks CreateVirtualDisk.
 func (m *MockBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 	args := m.Called(ctx, name, parentDir, sizeBytes)

@@ -10,4 +10,4 @@ spec:
   volumeName: preprovisioned-smb-vhdx
   resources:
     requests:
-      storage: 100Gi
+      storage: 1Gi

@@ -16,6 +16,7 @@ import (
 
 type mockBackend struct {
 	ensureTargetFn              func(ctx context.Context, targetName, targetIQN string) (string, error)
+	configureTargetChapFn       func(ctx context.Context, targetName string, opts TargetChapOptions) error
 	createVirtualDiskFn         func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error)
 	mapDiskToTargetFn           func(ctx context.Context, targetName, vhdxPath string) (int32, error)
 	unmapDiskFromTargetFn       func(ctx context.Context, targetName, vhdxPath string) error
@@ -50,6 +51,12 @@ func (m *mockBackend) EnsureTarget(ctx context.Context, targetName, targetIQN st
 		return m.ensureTargetFn(ctx, targetName, targetIQN)
 	}
 	return firstNonEmpty(targetIQN, targetName), nil
+}
+func (m *mockBackend) ConfigureTargetChap(ctx context.Context, targetName string, opts TargetChapOptions) error {
+	if m.configureTargetChapFn != nil {
+		return m.configureTargetChapFn(ctx, targetName, opts)
+	}
+	return nil
 }
 func (m *mockBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 	if m.createVirtualDiskFn != nil {
@@ -456,6 +463,65 @@ func TestCreateVolume_TargetPortalRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "targetPortal is required")
 }
 
+func TestTargetChapOptionsFromSecrets(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		opts, err := targetChapOptionsFromSecrets(nil)
+		require.NoError(t, err)
+		assert.False(t, opts.Enabled())
+	})
+
+	t.Run("session chap", func(t *testing.T) {
+		opts, err := targetChapOptionsFromSecrets(map[string]string{
+			"node.session.auth.username": " dbnode01 ",
+			"node.session.auth.password": " S3cret! ",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cret!"}, opts)
+	})
+
+	t.Run("mutual chap", func(t *testing.T) {
+		opts, err := targetChapOptionsFromSecrets(map[string]string{
+			"node.session.auth.username":    "dbnode01",
+			"node.session.auth.password":    "S3cret!",
+			"node.session.auth.username_in": "targetid",
+			"node.session.auth.password_in": "TargetS3cret!",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, TargetChapOptions{
+			ChapUser:          "dbnode01",
+			ChapSecret:        "S3cret!",
+			ReverseChapUser:   "targetid",
+			ReverseChapSecret: "TargetS3cret!",
+		}, opts)
+	})
+
+	t.Run("discovery chap is linux only", func(t *testing.T) {
+		opts, err := targetChapOptionsFromSecrets(map[string]string{
+			"discovery.sendtargets.auth.username": "discuser",
+			"discovery.sendtargets.auth.password": "DiscS3cret!",
+		})
+		require.NoError(t, err)
+		assert.False(t, opts.Enabled())
+	})
+
+	t.Run("missing password", func(t *testing.T) {
+		_, err := targetChapOptionsFromSecrets(map[string]string{
+			"node.session.auth.username": "dbnode01",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "node.session.auth.password")
+	})
+
+	t.Run("reverse requires session chap", func(t *testing.T) {
+		_, err := targetChapOptionsFromSecrets(map[string]string{
+			"node.session.auth.username_in": "targetid",
+			"node.session.auth.password_in": "TargetS3cret!",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reverse CHAP requires")
+	})
+}
+
 func TestCreateVolume_VhdxParentPathOptionalUsesBackendDefault(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 
@@ -483,12 +549,14 @@ func TestCreateVolume_VhdxParentPathOptionalUsesBackendDefault(t *testing.T) {
 		Parameters: map[string]string{
 			"targetPortal": "10.0.0.1:3260",
 			"iqnPrefix":    "iqn.2024-01.com.example",
+			"iface":        "storage0",
 		},
 	})
 
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, "iqn.2024-01.com.example:test-volume", resp.Volume.VolumeContext["iqn"])
+	assert.Equal(t, "storage0", resp.Volume.VolumeContext["iface"])
 }
 
 func TestCreateVolume_IqnPrefixOptionalUsesWindowsGeneratedIQN(t *testing.T) {
@@ -528,6 +596,53 @@ func TestCreateVolume_IqnPrefixOptionalUsesWindowsGeneratedIQN(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "test-volume", decoded.TargetName)
 	assert.Equal(t, "iqn.1991-05.com.microsoft:win-storage-test-volume", decoded.TargetIQN)
+}
+
+func TestCreateVolume_ConfiguresWindowsTargetChap(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+	var gotTargetName string
+	var gotChap TargetChapOptions
+
+	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
+		return "D:\\vhdx\\" + name + ".vhdx", sizeBytes, nil
+	}
+	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
+		return "iqn.1991-05.com.microsoft:win-storage-test-volume", nil
+	}
+	mockBackend.configureTargetChapFn = func(ctx context.Context, targetName string, opts TargetChapOptions) error {
+		gotTargetName = targetName
+		gotChap = opts
+		return nil
+	}
+	mockBackend.mapDiskToTargetFn = func(ctx context.Context, targetName, vhdxPath string) (int32, error) {
+		return 0, nil
+	}
+
+	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "test-volume",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}},
+		},
+		Parameters: map[string]string{
+			"targetPortal": "10.0.0.1",
+		},
+		Secrets: map[string]string{
+			"node.session.auth.username":    "dbnode01",
+			"node.session.auth.password":    "S3cret!",
+			"node.session.auth.username_in": "targetid",
+			"node.session.auth.password_in": "TargetS3cret!",
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "test-volume", gotTargetName)
+	assert.Equal(t, TargetChapOptions{
+		ChapUser:          "dbnode01",
+		ChapSecret:        "S3cret!",
+		ReverseChapUser:   "targetid",
+		ReverseChapSecret: "TargetS3cret!",
+	}, gotChap)
 }
 
 func TestCreateVolume_InvalidAccessMode(t *testing.T) {
@@ -1304,6 +1419,39 @@ func TestControllerPublishVolume_Success(t *testing.T) {
 	assert.Equal(t, "10.0.0.1:3260", resp.PublishContext["targetPortal"])
 	assert.Equal(t, "iqn.2024-01.com.example:test-volume", resp.PublishContext["iqn"])
 	assert.Equal(t, "0", resp.PublishContext["lun"])
+}
+
+func TestControllerPublishVolume_ConfiguresWindowsTargetChap(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+	var gotTargetName string
+	var gotChap TargetChapOptions
+
+	mockBackend.configureTargetChapFn = func(ctx context.Context, targetName string, opts TargetChapOptions) error {
+		gotTargetName = targetName
+		gotChap = opts
+		return nil
+	}
+	mockBackend.allowInitiatorFn = func(ctx context.Context, targetName, initiatorIQN string) error {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", targetName)
+		return nil
+	}
+
+	resp, err := cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: newTestVolumeID(t),
+		NodeId:   "iqn.2024-01.com.example:node-001",
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+		},
+		Secrets: map[string]string{
+			"node.session.auth.username": "dbnode01",
+			"node.session.auth.password": "S3cret!",
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "iqn.2024-01.com.example:test-volume", gotTargetName)
+	assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cret!"}, gotChap)
 }
 
 func TestControllerPublishVolume_UsesTargetNameWhenPresent(t *testing.T) {

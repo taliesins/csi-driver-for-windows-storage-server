@@ -10,4 +10,4 @@ spec:
   volumeName: preprovisioned-nfs-vhdx
   resources:
     requests:
-      storage: 100Gi
+      storage: 1Gi

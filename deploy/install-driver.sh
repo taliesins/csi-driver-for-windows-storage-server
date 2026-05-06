@@ -20,15 +20,25 @@ ver="master"
 use_local=false
 nfs_kerberos=false
 nfs_kerberos_flavor="krb5"
+node_only=false
 
 usage() {
   cat <<EOF
-Usage: $0 [version] [local] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
+Usage: $0 [version] [local] [--node-only] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
 
 Examples:
   $0
   $0 v1.0.1
+  $0 master local --node-only
   $0 master local --nfs-kerberos --nfs-kerberos-flavor krb5p
+
+Before installing controllers, either create Secret/kube-system/csi-driver-winrm
+with WINRM_HOST, WINRM_USER, and WINRM_PASSWORD keys, or export those environment
+variables and this script will create/update the Secret for you.
+
+Use --node-only for static, pre-provisioned volumes. This installs the Linux
+node side and CSIDriver objects only, skips WinRM/controller setup, and disables
+CSI attach for iSCSI.
 EOF
 }
 
@@ -36,6 +46,9 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     local|--local)
       use_local=true
+      ;;
+    --node-only|--nodeonly)
+      node_only=true
       ;;
     --nfs-kerberos|--kerberos)
       nfs_kerberos=true
@@ -84,6 +97,33 @@ apply_manifest() {
   kubectl apply -f "$repo/$1"
 }
 
+ensure_winrm_secret() {
+  if kubectl -n kube-system get secret csi-driver-winrm >/dev/null 2>&1; then
+    return
+  fi
+  if [[ -z "${WINRM_HOST:-}" || -z "${WINRM_USER:-}" || -z "${WINRM_PASSWORD:-}" ]]; then
+    echo "missing Secret/kube-system/csi-driver-winrm and WINRM_HOST/WINRM_USER/WINRM_PASSWORD are not all set" >&2
+    echo "create the secret manually or export those variables before running install-driver.sh" >&2
+    exit 1
+  fi
+  secret_args=(
+    --from-literal=WINRM_HOST="$WINRM_HOST"
+    --from-literal=WINRM_PORT="${WINRM_PORT:-5986}"
+    --from-literal=WINRM_TLS="${WINRM_TLS:-true}"
+    --from-literal=WINRM_INSECURE="${WINRM_INSECURE:-true}"
+    --from-literal=WINRM_AUTH="${WINRM_AUTH:-basic}"
+    --from-literal=WINRM_TIMEOUT="${WINRM_TIMEOUT:-60s}"
+    --from-literal=WINRM_USER="$WINRM_USER"
+    --from-literal=WINRM_PASSWORD="$WINRM_PASSWORD"
+  )
+  if [[ -n "${WINRM_PS_IMPORT:-}" ]]; then
+    secret_args+=(--from-literal=WINRM_PS_IMPORT="$WINRM_PS_IMPORT")
+  fi
+  kubectl -n kube-system create secret generic csi-driver-winrm \
+    "${secret_args[@]}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+}
+
 enable_nfs_kerberos() {
   echo "Enabling NFS Kerberos environment for NFS node daemonsets..."
   kubectl -n kube-system set env daemonset/csi-nfs-node -c nfs \
@@ -101,7 +141,14 @@ enable_nfs_kerberos() {
 }
 
 echo "Installing Windows storage CSI drivers, version: $ver ..."
-apply_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
+if [[ "$node_only" == true ]]; then
+  echo "node-only mode enabled; skipping controller and WinRM setup"
+  apply_manifest "csi-driver-for-windows-storage-server-driverinfo-nodeonly.yaml"
+else
+  ensure_winrm_secret
+  apply_manifest "csi-driver-for-windows-storage-server-controller.yaml"
+  apply_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
+fi
 apply_manifest "csi-nfs-for-windows-driverinfo.yaml"
 apply_manifest "csi-nfs-vhdx-for-windows-driverinfo.yaml"
 apply_manifest "csi-smb-for-windows-driverinfo.yaml"

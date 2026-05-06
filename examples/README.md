@@ -27,3 +27,5 @@ name, access mode, credentials, and feature set.
 
 Each protocol folder starts with `01-storageclass/` and then builds on the PVC
 names from the previous examples.
+Each protocol folder also includes static PV examples for both `nodeOnly=false`
+and `nodeOnly=true` installs.

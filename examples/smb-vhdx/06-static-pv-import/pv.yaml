@@ -4,12 +4,12 @@ metadata:
   name: preprovisioned-smb-vhdx
 spec:
   capacity:
-    storage: 100Gi
+    storage: 1Gi
   accessModes:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
   storageClassName: smb-vhdx-for-windows-rwx
   csi:
     driver: smb-vhdx.csi.windows.microsoft.com
-    volumeHandle: "smb://win-storage.lab.local/preprovisioned-smb-vhdx?name=preprovisioned-smb-vhdx&shareBackend=vhdx&sharePath=E%3A%5CSmbVhdxShares%5Cpreprovisioned-smb-vhdx&vhdxPath=E%3A%5CSmbShareVhdx%5Cpreprovisioned-smb-vhdx.vhdx&capacityBytes=107374182400"
+    volumeHandle: "smb://win-storage.lab.local/preprovisioned-smb-vhdx?name=preprovisioned-smb-vhdx&shareBackend=vhdx&sharePath=E%3A%5CSmbVhdxShares%5Cpreprovisioned-smb-vhdx&vhdxPath=E%3A%5CSmbShareVhdx%5Cpreprovisioned-smb-vhdx.vhdx&capacityBytes=1073741824"
     volumeAttributes: {}

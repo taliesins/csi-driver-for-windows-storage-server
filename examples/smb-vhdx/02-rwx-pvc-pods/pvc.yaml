@@ -9,4 +9,4 @@ spec:
   storageClassName: smb-vhdx-for-windows-rwx
   resources:
     requests:
-      storage: 100Gi
+      storage: 1Gi

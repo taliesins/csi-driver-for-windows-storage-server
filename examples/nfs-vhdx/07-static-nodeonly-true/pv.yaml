@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: static-nodeonly-nfs-vhdx
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: nfs-vhdx.csi.windows.microsoft.com
+    volumeHandle: "static-nodeonly-nfs-vhdx"
+    volumeAttributes:
+      protocol: "nfs"
+      nfsServer: "win-storage.lab.local"
+      nfsExportPath: "/static-nodeonly-nfs-vhdx"
+      nfsVersion: "4.1"

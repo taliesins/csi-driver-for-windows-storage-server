@@ -73,6 +73,62 @@ func fsTypeFromCapability(vc *csi.VolumeCapability) string {
 	return ""
 }
 
+func mountOptionsFromCapability(vc *csi.VolumeCapability) []string {
+	var opts []string
+	if vc == nil {
+		return opts
+	}
+	mount := vc.GetMount()
+	if mount == nil {
+		return opts
+	}
+	for _, opt := range mount.GetMountFlags() {
+		opt = strings.TrimSpace(opt)
+		if opt != "" {
+			opts = append(opts, opt)
+		}
+	}
+	return opts
+}
+
+func appendMountOptions(opts []string, raw string) []string {
+	for _, opt := range strings.Split(raw, ",") {
+		opt = strings.TrimSpace(opt)
+		if opt != "" {
+			opts = append(opts, opt)
+		}
+	}
+	return opts
+}
+
+func iscsiConnectionFromContexts(volumeID string, contexts ...map[string]string) (portal, iqn string, lun int, err error) {
+	if volumeIDContext := volumeContextFromVolumeID(volumeID, ProtocolISCSI); volumeIDContext != nil {
+		contexts = append(contexts, volumeIDContext)
+	}
+	portal = firstContextValueForKeys([]string{"targetPortal", "portal"}, contexts...)
+	if portal == "" {
+		err = status.Error(codes.InvalidArgument, "targetPortal is required in publishContext, volumeContext, or volumeId")
+		return
+	}
+	iqn = firstContextValueForKeys([]string{"iqn", "targetIQN", "targetIqn"}, contexts...)
+	if iqn == "" {
+		err = status.Error(codes.InvalidArgument, "iqn is required in publishContext, volumeContext, or volumeId")
+		return
+	}
+	lunStr := firstContextValueForKeys([]string{"lun", "LUN"}, contexts...)
+	if lunStr == "" {
+		err = status.Error(codes.InvalidArgument, "lun is required in publishContext, volumeContext, or volumeId")
+		return
+	}
+	li, conv := strconv.Atoi(lunStr)
+	if conv != nil {
+		err = status.Errorf(codes.InvalidArgument, "invalid lun: %q", lunStr)
+		return
+	}
+	lun = li
+	return
+}
+
 func isBlockDevice(p string) (bool, error) {
 	st, err := os.Stat(p)
 	if err != nil {
@@ -148,44 +204,20 @@ func (ns *nodeServer) parseStage(req *csi.NodeStageVolumeRequest) (portal, iqn s
 		return
 	}
 	pc := req.GetPublishContext()
-	if pc == nil {
-		err = status.Error(codes.InvalidArgument, "publishContext is required")
+	vc := req.GetVolumeContext()
+	portal, iqn, lun, err = iscsiConnectionFromContexts(req.GetVolumeId(), pc, vc)
+	if err != nil {
 		return
 	}
-	var ok bool
-	if portal, ok = getStr(pc, "targetPortal"); !ok {
-		err = status.Error(codes.InvalidArgument, "publishContext[targetPortal] missing")
-		return
-	}
-	if iqn, ok = getStr(pc, "iqn"); !ok {
-		err = status.Error(codes.InvalidArgument, "publishContext[iqn] missing")
-		return
-	}
-	lunStr, ok := getStr(pc, "lun")
-	if !ok {
-		err = status.Error(codes.InvalidArgument, "publishContext[lun] missing")
-		return
-	}
-	li, conv := strconv.Atoi(lunStr)
-	if conv != nil {
-		err = status.Errorf(codes.InvalidArgument, "invalid lun: %q", lunStr)
-		return
-	}
-	lun = li
 
 	fsType = fsTypeFromCapability(req.GetVolumeCapability())
-	vc := req.GetVolumeContext()
+	mountOpts = append(mountOpts, mountOptionsFromCapability(req.GetVolumeCapability())...)
 	if vc != nil {
 		if v, ok := getStr(vc, "fsType"); ok && fsType == "" {
 			fsType = v
 		}
 		if v, ok := getStr(vc, "mountOptions"); ok {
-			for _, mo := range strings.Split(v, ",") {
-				mo = strings.TrimSpace(mo)
-				if mo != "" {
-					mountOpts = append(mountOpts, mo)
-				}
-			}
+			mountOpts = appendMountOptions(mountOpts, v)
 		}
 		if v, ok := getStr(vc, "iface"); ok {
 			iface = v
@@ -207,44 +239,20 @@ func (ns *nodeServer) parsePublish(req *csi.NodePublishVolumeRequest) (portal, i
 		return
 	}
 	pc := req.GetPublishContext()
-	if pc == nil {
-		err = status.Error(codes.InvalidArgument, "publishContext is required")
+	vc := req.GetVolumeContext()
+	portal, iqn, lun, err = iscsiConnectionFromContexts(req.GetVolumeId(), pc, vc)
+	if err != nil {
 		return
 	}
-	var ok bool
-	if portal, ok = getStr(pc, "targetPortal"); !ok {
-		err = status.Error(codes.InvalidArgument, "publishContext[targetPortal] missing")
-		return
-	}
-	if iqn, ok = getStr(pc, "iqn"); !ok {
-		err = status.Error(codes.InvalidArgument, "publishContext[iqn] missing")
-		return
-	}
-	lunStr, ok := getStr(pc, "lun")
-	if !ok {
-		err = status.Error(codes.InvalidArgument, "publishContext[lun] missing")
-		return
-	}
-	li, conv := strconv.Atoi(lunStr)
-	if conv != nil {
-		err = status.Errorf(codes.InvalidArgument, "invalid lun: %q", lunStr)
-		return
-	}
-	lun = li
 
 	fsType = fsTypeFromCapability(req.GetVolumeCapability())
-	vc := req.GetVolumeContext()
+	mountOpts = append(mountOpts, mountOptionsFromCapability(req.GetVolumeCapability())...)
 	if vc != nil {
 		if v, ok := getStr(vc, "fsType"); ok && fsType == "" {
 			fsType = v
 		}
 		if v, ok := getStr(vc, "mountOptions"); ok {
-			for _, mo := range strings.Split(v, ",") {
-				mo = strings.TrimSpace(mo)
-				if mo != "" {
-					mountOpts = append(mountOpts, mo)
-				}
-			}
+			mountOpts = appendMountOptions(mountOpts, v)
 		}
 	}
 	if fsType == "" {
@@ -256,28 +264,38 @@ func (ns *nodeServer) parsePublish(req *csi.NodePublishVolumeRequest) (portal, i
 
 func publishProtocol(req interface {
 	GetPublishContext() map[string]string
+	GetVolumeContext() map[string]string
+	GetVolumeId() string
 }) Protocol {
-	pc := req.GetPublishContext()
-	proto := strings.ToLower(strings.TrimSpace(pc["protocol"]))
-	switch Protocol(proto) {
-	case ProtocolNFS:
-		return ProtocolNFS
-	case ProtocolSMB:
-		return ProtocolSMB
-	default:
-		return ProtocolISCSI
+	if proto := protocolFromContext(req.GetPublishContext(), req.GetVolumeContext()); proto != "" {
+		return proto
 	}
+	if proto, err := ParseProtocolFromVolumeID(req.GetVolumeId()); err == nil {
+		switch proto {
+		case ProtocolNFS, ProtocolSMB:
+			return proto
+		}
+	}
+	return ProtocolISCSI
+}
+
+func protocolFromContext(contexts ...map[string]string) Protocol {
+	for _, ctx := range contexts {
+		proto := strings.ToLower(strings.TrimSpace(ctx["protocol"]))
+		switch Protocol(proto) {
+		case ProtocolNFS:
+			return ProtocolNFS
+		case ProtocolSMB:
+			return ProtocolSMB
+		}
+	}
+	return ""
 }
 
 func mountOptionsFromContext(vc map[string]string) []string {
 	var opts []string
 	if v, ok := getStr(vc, "mountOptions"); ok {
-		for _, mo := range strings.Split(v, ",") {
-			mo = strings.TrimSpace(mo)
-			if mo != "" {
-				opts = append(opts, mo)
-			}
-		}
+		opts = appendMountOptions(opts, v)
 	}
 	return opts
 }
@@ -291,13 +309,32 @@ func firstContextValue(key string, contexts ...map[string]string) string {
 	return ""
 }
 
-func nfsMountAuthenticationFromContext(vc, pc map[string]string) (string, error) {
-	if value := firstContextValue("nfsMountAuthentication", vc, pc); value != "" {
+func firstContextValueForKeys(keys []string, contexts ...map[string]string) string {
+	for _, ctx := range contexts {
+		for _, key := range keys {
+			if value, ok := getStr(ctx, key); ok {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func volumeContextFromVolumeID(volumeID string, proto Protocol) map[string]string {
+	decoded, err := DecodeVolumeID(volumeID)
+	if err != nil || decoded.Protocol != proto {
+		return nil
+	}
+	return volumeContextForVolumeID(decoded)
+}
+
+func nfsMountAuthenticationFromContext(contexts ...map[string]string) (string, error) {
+	if value := firstContextValue("nfsMountAuthentication", contexts...); value != "" {
 		return normalizeNfsAuthenticationFlavor(value)
 	}
-	raw := firstContextValue("nfsAuthentication", vc, pc)
+	raw := firstContextValue("nfsAuthentication", contexts...)
 	if raw == "" {
-		raw = firstContextValue("nfsauthentication", vc, pc)
+		raw = firstContextValue("nfsauthentication", contexts...)
 	}
 	auth, err := normalizeNfsAuthentication(raw)
 	if err != nil {
@@ -337,44 +374,34 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 		return nil, status.Errorf(codes.InvalidArgument, "%s volumes do not support block mode", proto)
 	}
 	pc := req.GetPublishContext()
+	vc := req.GetVolumeContext()
+	volumeIDContext := volumeContextFromVolumeID(req.GetVolumeId(), proto)
 	var source, fsType string
 	switch proto {
 	case ProtocolNFS:
-		server, ok := getStr(pc, "nfsServer")
-		if !ok {
-			server, ok = getStr(pc, "server")
-		}
-		exportPath, ok2 := getStr(pc, "nfsExportPath")
-		if !ok2 {
-			exportPath, ok2 = getStr(pc, "exportPath")
-		}
-		if !ok || !ok2 {
-			return nil, status.Error(codes.InvalidArgument, "publishContext nfsServer/server and nfsExportPath/exportPath are required")
+		server := firstContextValueForKeys([]string{"nfsServer", "server"}, pc, vc, volumeIDContext)
+		exportPath := firstContextValueForKeys([]string{"nfsExportPath", "exportPath"}, pc, vc, volumeIDContext)
+		if server == "" || exportPath == "" {
+			return nil, status.Error(codes.InvalidArgument, "nfsServer/server and nfsExportPath/exportPath are required in publishContext, volumeContext, or volumeId")
 		}
 		source = server + ":" + exportPath
 		fsType = "nfs"
 	case ProtocolSMB:
-		server, ok := getStr(pc, "smbServer")
-		if !ok {
-			server, ok = getStr(pc, "server")
-		}
-		share, ok2 := getStr(pc, "smbShareName")
-		if !ok2 {
-			share, ok2 = getStr(pc, "share")
-		}
-		if !ok || !ok2 {
-			return nil, status.Error(codes.InvalidArgument, "publishContext smbServer/server and smbShareName/share are required")
+		server := firstContextValueForKeys([]string{"smbServer", "server"}, pc, vc, volumeIDContext)
+		share := firstContextValueForKeys([]string{"smbShareName", "share"}, pc, vc, volumeIDContext)
+		if server == "" || share == "" {
+			return nil, status.Error(codes.InvalidArgument, "smbServer/server and smbShareName/share are required in publishContext, volumeContext, or volumeId")
 		}
 		source = fmt.Sprintf("//%s/%s", server, share)
 		fsType = "cifs"
 	}
-	opts := mountOptionsFromContext(req.GetVolumeContext())
+	opts := append(mountOptionsFromCapability(req.GetVolumeCapability()), mountOptionsFromContext(vc)...)
 	switch proto {
 	case ProtocolNFS:
-		if version, ok := getStr(req.GetVolumeContext(), "nfsVersion"); ok {
+		if version, ok := getStr(vc, "nfsVersion"); ok {
 			opts = appendOptionIfMissing(opts, "vers=", "vers="+version)
 		}
-		authentication, err := nfsMountAuthenticationFromContext(req.GetVolumeContext(), pc)
+		authentication, err := nfsMountAuthenticationFromContext(vc, pc, volumeIDContext)
 		if err != nil {
 			return nil, err
 		}
@@ -382,7 +409,7 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 			opts = appendOptionIfMissing(opts, "sec=", "sec="+authentication)
 		}
 	case ProtocolSMB:
-		if version, ok := getStr(req.GetVolumeContext(), "smbVersion"); ok {
+		if version, ok := getStr(vc, "smbVersion"); ok {
 			opts = appendOptionIfMissing(opts, "vers=", "vers="+version)
 		}
 		if username, ok := firstSecretValue(req.GetSecrets(), "smbUsername", "username"); ok {
@@ -394,7 +421,7 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 		if domain, ok := firstSecretValue(req.GetSecrets(), "smbDomain", "domain"); ok {
 			opts = appendOptionIfMissing(opts, "domain=", "domain="+domain)
 		}
-		if seal, ok := getStr(req.GetVolumeContext(), "smbSeal"); ok {
+		if seal, ok := getStr(vc, "smbSeal"); ok {
 			if enabled, err := strconv.ParseBool(seal); err == nil && enabled {
 				opts = appendOptionIfMissing(opts, "seal", "seal")
 			}

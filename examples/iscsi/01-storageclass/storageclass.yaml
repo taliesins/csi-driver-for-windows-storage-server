@@ -20,8 +20,14 @@ parameters:
   # Optional: filesystem type defaults to ext4.
   # csi.storage.k8s.io/fstype: "xfs"
 
-  # Optional CHAP credentials. Leave unset unless the Windows iSCSI target
-  # requires CHAP for node login.
+  # Optional CHAP credentials. Leave unset unless you want the controller to
+  # configure Windows target CHAP and the node to log in with CHAP. Use the
+  # same Secret for provisioning, controller publish, and node stage so both
+  # sides see matching credentials.
+  # csi.storage.k8s.io/provisioner-secret-name: "iscsi-chap"
+  # csi.storage.k8s.io/provisioner-secret-namespace: "${pvc.namespace}"
+  # csi.storage.k8s.io/controller-publish-secret-name: "iscsi-chap"
+  # csi.storage.k8s.io/controller-publish-secret-namespace: "${pvc.namespace}"
   # csi.storage.k8s.io/node-stage-secret-name: "iscsi-chap"
   # csi.storage.k8s.io/node-stage-secret-namespace: "${pvc.namespace}"
   # iface: "default"

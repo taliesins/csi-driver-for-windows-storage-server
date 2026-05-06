@@ -1,13 +1,23 @@
 Thank you for installing the csi-driver-for-windows-storage-server Helm chart!
 
 Your CSI driver has been deployed with:
-- Controller Deployment (cluster-wide volume operations)
-- Node DaemonSet (runs on every node for attach/mount)
-- CSIDriver attach enabled, so pod moves update Windows iSCSI target initiators
+{{- if .Values.nodeOnly }}
+- Node-only mode enabled: Windows-side controller configuration was skipped
+- Node DaemonSets for each enabled CSI driver
+- CSIDrivers with attach disabled, including iSCSI, for static pre-provisioned volumes
+{{- else }}
+- Controller Deployments for each enabled CSI driver
+- Node DaemonSets for each enabled CSI driver
+- CSIDriver attach enabled for iSCSI, so pod moves update Windows iSCSI target initiators
+{{- end }}
 
 Key resources created:
+{{- if .Values.nodeOnly }}
+- ServiceAccount, ClusterRole, and ClusterRoleBinding for node pods
+{{- else }}
 - ServiceAccounts: separate for controller and node
 - ClusterRoles and ClusterRoleBindings for least-privilege RBAC
+{{- end }}
 
 Each Linux node that uses iSCSI must have a stable open-iscsi initiator name at:
   {{ .Values.node.initiatorNamePath }}
@@ -15,17 +25,21 @@ Each Linux node that uses iSCSI must have a stable open-iscsi initiator name at:
 To verify the deployment:
 
 1. Check controller pod status:
-  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if .Values.nodeOnly }}
+  # skipped in node-only mode
+{{- else }}
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=controller -n {{ .Release.Namespace }}
+{{- end }}
 
-2. Check node pods (should be one per node):
-  kubectl get daemonset {{ include "csi-driver-for-windows-storage-server.nodeName" . }} -n {{ .Release.Namespace }}
+2. Check node daemonsets:
+  kubectl get daemonset -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=node -n {{ .Release.Namespace }}
 
 3. Check RBAC and ServiceAccounts:
-  kubectl get serviceaccounts,clusterroles,clusterrolebindings -n {{ .Release.Namespace }} | grep iscsi
+  kubectl get serviceaccounts,clusterroles,clusterrolebindings -n {{ .Release.Namespace }} | grep csi-driver-for-windows-storage-server
 
 4. To see logs for troubleshooting:
-  kubectl logs deployment/{{ include "csi-driver-for-windows-storage-server.controllerName" . }} -n {{ .Release.Namespace }}
-  kubectl logs daemonset/{{ include "csi-driver-for-windows-storage-server.nodeName" . }} -n {{ .Release.Namespace }}
+  kubectl logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=controller -n {{ .Release.Namespace }}
+  kubectl logs -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=node -n {{ .Release.Namespace }}
 
 To use the driver, create a StorageClass referencing this CSI driver and then create PVCs as needed. See the examples/ directory for sample manifests.
 

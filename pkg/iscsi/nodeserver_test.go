@@ -141,7 +141,7 @@ func TestNodeStageVolume_VolumeCapabilityRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "volumeCapability missing")
 }
 
-func TestNodeStageVolume_PublishContextRequired(t *testing.T) {
+func TestNodeStageVolume_IscsiConnectionRequired(t *testing.T) {
 	ns, _, _ := newTestNodeServer(t)
 	_, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
 		VolumeId:          "test-vol",
@@ -149,7 +149,7 @@ func TestNodeStageVolume_PublishContextRequired(t *testing.T) {
 		VolumeCapability:  &csi.VolumeCapability{},
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "publishContext is required")
+	assert.Contains(t, err.Error(), "targetPortal is required")
 }
 
 func TestNodeStageVolume_BlockVolume(t *testing.T) {
@@ -226,6 +226,72 @@ func TestNodeStageVolume_BlockVolume(t *testing.T) {
 	assert.Empty(t, mockMount.formatAndMounts)
 }
 
+func TestNodeStageVolume_StaticISCSIUsesVolumeContextWithoutPublishContext(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	var gotConnector iscsilib.Connector
+	originalConnect := iscsilibConnect
+	iscsilibConnect = func(c *iscsilib.Connector) (string, error) {
+		c.MountTargetDevice = &iscsilib.Device{Name: "sdb", Type: "disk"}
+		gotConnector = *c
+		return c.MountTargetDevice.GetPath(), nil
+	}
+	t.Cleanup(func() { iscsilibConnect = originalConnect })
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "static-iscsi-volume",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+		},
+		VolumeContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"targetIQN":    "iqn.2024-01.com.example:static-volume",
+			"lun":          "3",
+			"iface":        "storage0",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "static-iscsi-volume", gotConnector.VolumeName)
+	assert.Equal(t, "iqn.2024-01.com.example:static-volume", gotConnector.TargetIqn)
+	assert.Equal(t, []string{"10.0.0.1:3260"}, gotConnector.TargetPortals)
+	assert.Equal(t, int32(3), gotConnector.Lun)
+	assert.Equal(t, "storage0", gotConnector.Interface)
+}
+
+func TestNodeStageVolume_StaticISCSIUsesVolumeIDWithoutPublishContext(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	var gotConnector iscsilib.Connector
+	originalConnect := iscsilibConnect
+	iscsilibConnect = func(c *iscsilib.Connector) (string, error) {
+		c.MountTargetDevice = &iscsilib.Device{Name: "sdb", Type: "disk"}
+		gotConnector = *c
+		return c.MountTargetDevice.GetPath(), nil
+	}
+	t.Cleanup(func() { iscsilibConnect = originalConnect })
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "iscsi://10.0.0.1:3260/iqn.2024-01.com.example:static-volume/lun/4?name=static-iscsi-volume",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "iqn.2024-01.com.example:static-volume", gotConnector.TargetIqn)
+	assert.Equal(t, []string{"10.0.0.1:3260"}, gotConnector.TargetPortals)
+	assert.Equal(t, int32(4), gotConnector.Lun)
+}
+
 func TestNodeStageVolume_FilesystemFsType(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -293,7 +359,8 @@ func TestNodeStageVolume_FilesystemFsType(t *testing.T) {
 				VolumeCapability: &csi.VolumeCapability{
 					AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
 					AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{
-						FsType: tt.capabilityFsType,
+						FsType:     tt.capabilityFsType,
+						MountFlags: []string{"rw"},
 					}},
 				},
 				PublishContext: map[string]string{
@@ -309,6 +376,7 @@ func TestNodeStageVolume_FilesystemFsType(t *testing.T) {
 			assert.Equal(t, "/dev/sdb", gotSource)
 			assert.Equal(t, stagingTargetPath, gotTarget)
 			assert.Equal(t, tt.wantFsType, gotFsType)
+			assert.Contains(t, gotOptions, "rw")
 			for _, opt := range tt.wantOptions {
 				assert.Contains(t, gotOptions, opt)
 			}
@@ -325,7 +393,9 @@ func TestNodeStageVolume_NFS(t *testing.T) {
 		StagingTargetPath: stagingTargetPath,
 		VolumeCapability: &csi.VolumeCapability{
 			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
-			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{
+				MountFlags: []string{"sync"},
+			}},
 		},
 		PublishContext: map[string]string{
 			"protocol":      "nfs",
@@ -344,9 +414,37 @@ func TestNodeStageVolume_NFS(t *testing.T) {
 	require.Len(t, mockMount.formatAndMounts, 1)
 	assert.Equal(t, "10.0.0.2:/export/test", mockMount.formatAndMounts[0].source)
 	assert.Equal(t, "nfs", mockMount.formatAndMounts[0].fsType)
+	assert.Contains(t, mockMount.formatAndMounts[0].options, "sync")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "nfsvers=4.1")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "vers=4.2")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "sec=krb5p")
+}
+
+func TestNodeStageVolume_NFSWithoutPublishContextUsesVolumeContext(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "nfs://10.0.0.2/export/test",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		},
+		VolumeContext: map[string]string{
+			"protocol":               "nfs",
+			"nfsServer":              "10.0.0.4",
+			"nfsExportPath":          "/export/context",
+			"nfsMountAuthentication": "krb5i",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	require.Len(t, mockMount.formatAndMounts, 1)
+	assert.Equal(t, "10.0.0.4:/export/context", mockMount.formatAndMounts[0].source)
+	assert.Equal(t, "nfs", mockMount.formatAndMounts[0].fsType)
+	assert.Contains(t, mockMount.formatAndMounts[0].options, "sec=krb5i")
 }
 
 func TestNodeStageVolume_SMB(t *testing.T) {
@@ -386,6 +484,26 @@ func TestNodeStageVolume_SMB(t *testing.T) {
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "password=storage-pass")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "domain=EXAMPLE")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "seal")
+}
+
+func TestNodeStageVolume_SMBWithoutPublishContextUsesVolumeID(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "smb://10.0.0.3/share",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	require.Len(t, mockMount.formatAndMounts, 1)
+	assert.Equal(t, "//10.0.0.3/share", mockMount.formatAndMounts[0].source)
+	assert.Equal(t, "cifs", mockMount.formatAndMounts[0].fsType)
 }
 
 // ---------------------------------------------------------------------------
@@ -527,10 +645,10 @@ func TestNodePublishVolume_ParsePublishErrors(t *testing.T) {
 		publishContext map[string]string
 		wantErr        string
 	}{
-		{name: "missing publish context", wantErr: "publishContext is required"},
-		{name: "missing target portal", publishContext: map[string]string{"iqn": "iqn.2024-01.com.example:test", "lun": "0"}, wantErr: "publishContext[targetPortal] missing"},
-		{name: "missing iqn", publishContext: map[string]string{"targetPortal": "10.0.0.1:3260", "lun": "0"}, wantErr: "publishContext[iqn] missing"},
-		{name: "missing lun", publishContext: map[string]string{"targetPortal": "10.0.0.1:3260", "iqn": "iqn.2024-01.com.example:test"}, wantErr: "publishContext[lun] missing"},
+		{name: "missing publish context", wantErr: "targetPortal is required"},
+		{name: "missing target portal", publishContext: map[string]string{"iqn": "iqn.2024-01.com.example:test", "lun": "0"}, wantErr: "targetPortal is required"},
+		{name: "missing iqn", publishContext: map[string]string{"targetPortal": "10.0.0.1:3260", "lun": "0"}, wantErr: "iqn is required"},
+		{name: "missing lun", publishContext: map[string]string{"targetPortal": "10.0.0.1:3260", "iqn": "iqn.2024-01.com.example:test"}, wantErr: "lun is required"},
 		{name: "invalid lun", publishContext: map[string]string{"targetPortal": "10.0.0.1:3260", "iqn": "iqn.2024-01.com.example:test", "lun": "bad"}, wantErr: "invalid lun"},
 	}
 
@@ -550,6 +668,34 @@ func TestNodePublishVolume_ParsePublishErrors(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestNodePublishVolume_StaticISCSIUsesVolumeContextWithoutPublishContext(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	targetPath := t.TempDir()
+
+	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "static-iscsi-volume",
+		TargetPath:        targetPath,
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "ext4"}},
+		},
+		VolumeContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:static-volume",
+			"lun":          "3",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	require.Len(t, mockMount.formatAndMounts, 1)
+	assert.Equal(t, stagingTargetPath, mockMount.formatAndMounts[0].source)
+	assert.Equal(t, targetPath, mockMount.formatAndMounts[0].target)
+	assert.Contains(t, mockMount.formatAndMounts[0].options, "bind")
 }
 
 func TestNodePublishVolume_FileShareValidation(t *testing.T) {
@@ -580,6 +726,29 @@ func TestNodePublishVolume_FileShareValidation(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "stagingTargetPath required")
 	})
+}
+
+func TestNodePublishVolume_FileShareWithoutPublishContextUsesVolumeID(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	targetPath := t.TempDir()
+
+	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "nfs://10.0.0.2/export/test",
+		TargetPath:        targetPath,
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	require.Len(t, mockMount.formatAndMounts, 1)
+	assert.Equal(t, stagingTargetPath, mockMount.formatAndMounts[0].source)
+	assert.Equal(t, targetPath, mockMount.formatAndMounts[0].target)
+	assert.Contains(t, mockMount.formatAndMounts[0].options, "bind")
 }
 
 func TestNodePublishVolume_FilesystemVolume(t *testing.T) {

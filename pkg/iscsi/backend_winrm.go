@@ -248,6 +248,34 @@ if (-not [string]::IsNullOrWhiteSpace($targetIQN) -and [string]$t.TargetIqn -ne 
 	return out.TargetIQN, nil
 }
 
+func (b *WinRMBackend) ConfigureTargetChap(ctx context.Context, targetName string, opts TargetChapOptions) error {
+	targetName = strings.TrimSpace(targetName)
+	if targetName == "" {
+		return fmt.Errorf("target name is required")
+	}
+	if !opts.Enabled() {
+		return nil
+	}
+	s := fmt.Sprintf(`
+$targetName = '%s'
+$params = @{ ComputerName=$IscsiTargetComputerName; TargetName=$targetName }
+if (-not [string]::IsNullOrWhiteSpace('%s')) {
+  $chapSecret = ConvertTo-SecureString -String '%s' -AsPlainText -Force
+  $params.EnableChap = $true
+  $params.Chap = [pscredential]::new('%s', $chapSecret)
+}
+if (-not [string]::IsNullOrWhiteSpace('%s')) {
+  $reverseChapSecret = ConvertTo-SecureString -String '%s' -AsPlainText -Force
+  $params.EnableReverseChap = $true
+  $params.ReverseChap = [pscredential]::new('%s', $reverseChapSecret)
+}
+Set-IscsiServerTarget @params | Out-Null
+@{ ok = $true }
+`, escapePS(targetName), escapePS(opts.ChapUser), escapePS(opts.ChapSecret), escapePS(opts.ChapUser), escapePS(opts.ReverseChapUser), escapePS(opts.ReverseChapSecret), escapePS(opts.ReverseChapUser))
+	var out map[string]any
+	return b.runPS(ctx, s, &out)
+}
+
 func (b *WinRMBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 	s := fmt.Sprintf(`
 $parentDir = Resolve-CsiVHDXParentPath '%s'

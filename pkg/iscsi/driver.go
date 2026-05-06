@@ -32,6 +32,7 @@ const driverRunDirEnv = "CSI_DRIVER_RUN_DIR"
 // Implemented by WinRMBackend in backend_winrm.go.
 type Backend interface {
 	EnsureTarget(ctx context.Context, targetName, targetIQN string) (string, error)
+	ConfigureTargetChap(ctx context.Context, targetName string, opts TargetChapOptions) error
 	CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error)
 	MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error)
 	UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error
@@ -60,6 +61,20 @@ type Backend interface {
 	RestoreSnapshotAsFileShare(ctx context.Context, snapshotID, destinationPath string) error
 	MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error
 	UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error
+}
+
+type TargetChapOptions struct {
+	ChapUser          string
+	ChapSecret        string
+	ReverseChapUser   string
+	ReverseChapSecret string
+}
+
+func (o TargetChapOptions) Enabled() bool {
+	return strings.TrimSpace(o.ChapUser) != "" ||
+		strings.TrimSpace(o.ChapSecret) != "" ||
+		strings.TrimSpace(o.ReverseChapUser) != "" ||
+		strings.TrimSpace(o.ReverseChapSecret) != ""
 }
 
 const (

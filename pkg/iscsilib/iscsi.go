@@ -380,7 +380,7 @@ func (c *Connector) discoverTarget(targetIqn string, iFace string, portal string
 		}
 	}
 
-	if c.DoCHAPDiscovery {
+	if c.DoCHAPDiscovery || c.SessionSecrets.SecretsType == "chap" {
 		// Make sure we don't log the secrets
 		err := CreateDBEntry(targetIqn, portal, iFace, c.DiscoverySecrets, c.SessionSecrets)
 		if err != nil {

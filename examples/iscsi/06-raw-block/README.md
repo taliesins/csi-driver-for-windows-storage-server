@@ -1,6 +1,6 @@
 # iSCSI Raw Block Volume
 
-Requests a 50Gi RWO raw block volume and exposes it at `/dev/walraw`.
+Requests a 1Gi RWO raw block volume and exposes it at `/dev/walraw`.
 
 ## Apply
 

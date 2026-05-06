@@ -313,6 +313,41 @@ func TestWinRMBackend_EnsureTarget(t *testing.T) {
 	}
 }
 
+func TestWinRMBackend_ConfigureTargetChap(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		assert.Contains(t, script, "Set-IscsiServerTarget @params")
+		assert.Contains(t, script, "$params.EnableChap = $true")
+		assert.Contains(t, script, "$params.Chap = [pscredential]::new('dbnode01', $chapSecret)")
+		assert.Contains(t, script, "$params.EnableReverseChap = $true")
+		assert.Contains(t, script, "$params.ReverseChap = [pscredential]::new('targetid', $reverseChapSecret)")
+		assert.Contains(t, script, "S3cret!")
+		assert.Contains(t, script, "TargetS3cret!")
+		if out != nil {
+			copyTestOutput(out, map[string]any{"ok": true})
+		}
+		return nil
+	}
+
+	err := backend.ConfigureTargetChap(context.Background(), "target-001", TargetChapOptions{
+		ChapUser:          "dbnode01",
+		ChapSecret:        "S3cret!",
+		ReverseChapUser:   "targetid",
+		ReverseChapSecret: "TargetS3cret!",
+	})
+	require.NoError(t, err)
+}
+
+func TestWinRMBackend_ConfigureTargetChapNoopWhenEmpty(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		t.Fatalf("ConfigureTargetChap should not run PowerShell when options are empty")
+		return nil
+	}
+
+	require.NoError(t, backend.ConfigureTargetChap(context.Background(), "target-001", TargetChapOptions{}))
+}
+
 // ---------------------------------------------------------------------------
 // CreateVirtualDisk tests
 // ---------------------------------------------------------------------------
