@@ -30,6 +30,20 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --v={{ $root.Values.sidecars.logLevel }}
+            {{- if gt (int $root.Values.controller.replicas) 1 }}
+            - --leader-election=true
+            - --leader-election-namespace=$(POD_NAMESPACE)
+            - --leader-election-lease-duration={{ $root.Values.controller.leaderElection.leaseDuration }}
+            - --leader-election-renew-deadline={{ $root.Values.controller.leaderElection.renewDeadline }}
+            - --leader-election-retry-period={{ $root.Values.controller.leaderElection.retryPeriod }}
+            {{- end }}
+          {{- if gt (int $root.Values.controller.replicas) 1 }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          {{- end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
@@ -39,6 +53,20 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --v={{ $root.Values.sidecars.logLevel }}
+            {{- if gt (int $root.Values.controller.replicas) 1 }}
+            - --leader-election=true
+            - --leader-election-namespace=$(POD_NAMESPACE)
+            - --leader-election-lease-duration={{ $root.Values.controller.leaderElection.leaseDuration }}
+            - --leader-election-renew-deadline={{ $root.Values.controller.leaderElection.renewDeadline }}
+            - --leader-election-retry-period={{ $root.Values.controller.leaderElection.retryPeriod }}
+            {{- end }}
+          {{- if gt (int $root.Values.controller.replicas) 1 }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          {{- end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

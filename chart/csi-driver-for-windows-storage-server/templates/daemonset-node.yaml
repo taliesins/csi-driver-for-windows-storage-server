@@ -141,16 +141,16 @@ spec:
             type: DirectoryOrCreate
 {{- end }}
 {{- end }}
-{{- $iscsi := index .Values.drivers "iscsi" -}}
-{{- if and $iscsi $iscsi.enabled }}
+{{- range $key, $driver := .Values.drivers }}
+{{- if and $driver.enabled $driver.needsIscsi }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "csi-driver-for-windows-storage-server.driverNodeName" (dict "root" . "key" "iscsi") }}-iscsiadm
+  name: {{ include "csi-driver-for-windows-storage-server.driverNodeName" (dict "root" $root "key" $key) }}-iscsiadm
   labels:
-    {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
-    app.kubernetes.io/csi-driver: "iscsi"
+    {{- include "csi-driver-for-windows-storage-server.labels" $root | nindent 4 }}
+    app.kubernetes.io/csi-driver: {{ $key | quote }}
     app.kubernetes.io/component: "node"
 data:
   iscsiadm: |
@@ -166,4 +166,5 @@ data:
     else
       chroot /host iscsiadm "$@"
     fi
+{{- end }}
 {{- end }}

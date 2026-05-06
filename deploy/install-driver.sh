@@ -93,15 +93,47 @@ if [[ "$use_local" == true ]]; then
   repo="./deploy"
 fi
 
+chart_path="chart/csi-driver-for-windows-storage-server/Chart.yaml"
+driver_image_repository="ghcr.io/taliesins/csi-driver-for-windows-storage-server"
+
 apply_manifest() {
   kubectl apply -f "$repo/$1"
 }
 
-ensure_winrm_secret() {
-  if kubectl -n kube-system get secret csi-driver-winrm >/dev/null 2>&1; then
-    return
+chart_app_version() {
+  if [[ "$use_local" == true ]]; then
+    sed -nE 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' "$chart_path" | head -n 1
+  else
+    curl -fsSL "https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/$ver/$chart_path" \
+      | sed -nE 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' \
+      | head -n 1
   fi
+}
+
+apply_controller_manifest() {
+  local app_version
+  app_version="$(chart_app_version)"
+  if [[ -z "$app_version" ]]; then
+    echo "could not determine chart appVersion for controller image tag" >&2
+    exit 1
+  fi
+
+  if [[ "$use_local" == true ]]; then
+    sed -E "s#image: ${driver_image_repository}:[^[:space:]]+#image: ${driver_image_repository}:${app_version}#g" \
+      "$repo/csi-driver-for-windows-storage-server-controller.yaml" \
+      | kubectl apply -f -
+  else
+    curl -fsSL "$repo/csi-driver-for-windows-storage-server-controller.yaml" \
+      | sed -E "s#image: ${driver_image_repository}:[^[:space:]]+#image: ${driver_image_repository}:${app_version}#g" \
+      | kubectl apply -f -
+  fi
+}
+
+ensure_winrm_secret() {
   if [[ -z "${WINRM_HOST:-}" || -z "${WINRM_USER:-}" || -z "${WINRM_PASSWORD:-}" ]]; then
+    if kubectl -n kube-system get secret csi-driver-winrm >/dev/null 2>&1; then
+      return
+    fi
     echo "missing Secret/kube-system/csi-driver-winrm and WINRM_HOST/WINRM_USER/WINRM_PASSWORD are not all set" >&2
     echo "create the secret manually or export those variables before running install-driver.sh" >&2
     exit 1
@@ -146,7 +178,7 @@ if [[ "$node_only" == true ]]; then
   apply_manifest "csi-driver-for-windows-storage-server-driverinfo-nodeonly.yaml"
 else
   ensure_winrm_secret
-  apply_manifest "csi-driver-for-windows-storage-server-controller.yaml"
+  apply_controller_manifest
   apply_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
 fi
 apply_manifest "csi-nfs-for-windows-driverinfo.yaml"

@@ -749,9 +749,6 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		if targetIQN == "" {
 			return nil, status.Errorf(codes.Internal, "EnsureTarget returned an empty target IQN for target %q", existingTargetName)
 		}
-		if err := cs.configureTargetChapFromSecrets(ctx, existingTargetName, req.GetSecrets()); err != nil {
-			return nil, err
-		}
 		if existingLUN < 0 {
 			lun, err := cs.Driver.backend.MapDiskToTarget(ctx, existingTargetName, vhdxPath)
 			if err != nil {

@@ -6,7 +6,7 @@ skipped, so the driver will not create VHDX files, create targets, map LUNs,
 configure CHAP, or update Windows target initiator access.
 
 ```bash
-kubectl create ns apps
+kubectl create namespace apps --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f pv.yaml
 kubectl -n apps apply -f pvc.yaml
 kubectl -n apps apply -f pod.yaml

@@ -317,6 +317,8 @@ func TestWinRMBackend_ConfigureTargetChap(t *testing.T) {
 	backend := newUnitWinRMBackend()
 	backend.psRunner = func(ctx context.Context, script string, out any) error {
 		assert.Contains(t, script, "Set-IscsiServerTarget @params")
+		assert.Contains(t, script, "$targetName = 'target-001'")
+		assert.Contains(t, script, "TargetName=$targetName")
 		assert.Contains(t, script, "$params.EnableChap = $true")
 		assert.Contains(t, script, "$params.Chap = [pscredential]::new('dbnode01', $chapSecret)")
 		assert.Contains(t, script, "$params.EnableReverseChap = $true")

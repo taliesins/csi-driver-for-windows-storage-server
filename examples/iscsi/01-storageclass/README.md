@@ -17,10 +17,14 @@ not set, it falls back to `%SystemDrive%\iSCSIVirtualDisks`.
 CHAP is optional for iSCSI. To have the driver configure both sides, set the
 same Secret for `csi.storage.k8s.io/provisioner-secret-name`,
 `csi.storage.k8s.io/controller-publish-secret-name`, and
-`csi.storage.k8s.io/node-stage-secret-name`. The controller uses the
-provisioner/controller-publish secret to configure Windows target CHAP and
-reverse CHAP. The node uses the node-stage secret for the Linux open-iscsi
-login.
+`csi.storage.k8s.io/node-stage-secret-name`. For each of those name keys, also
+set the matching namespace key:
+`csi.storage.k8s.io/provisioner-secret-namespace`,
+`csi.storage.k8s.io/controller-publish-secret-namespace`, and
+`csi.storage.k8s.io/node-stage-secret-namespace`. Both the name and namespace
+must be configured for the provisioner, controller-publish, and node-stage
+secrets so the driver can resolve secrets for Windows CHAP/reverse CHAP and
+Linux open-iscsi login.
 
 Windows target CHAP uses `node.session.auth.username`,
 `node.session.auth.password`, and optionally `node.session.auth.username_in` /

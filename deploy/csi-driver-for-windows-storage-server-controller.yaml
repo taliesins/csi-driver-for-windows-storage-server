@@ -11,8 +11,11 @@ metadata:
   name: csi-windows-storage-controller
 rules:
   - apiGroups: [""]
-    resources: ["persistentvolumes", "persistentvolumeclaims", "nodes", "events", "secrets"]
+    resources: ["persistentvolumes", "persistentvolumeclaims", "events"]
     verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["nodes", "secrets"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims/status"]
     verbs: ["get", "update", "patch"]
@@ -84,7 +87,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: iscsi
-          image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
+          image: ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
@@ -192,7 +195,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: nfs
-          image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
+          image: ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
@@ -300,7 +303,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: nfs-vhdx
-          image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
+          image: ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
@@ -408,7 +411,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: smb
-          image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
+          image: ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)
@@ -516,7 +519,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: smb-vhdx
-          image: gcr.io/k8s-staging-sig-storage/csiplugin:canary
+          image: ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0
           imagePullPolicy: IfNotPresent
           args:
             - --endpoint=$(CSI_ENDPOINT)

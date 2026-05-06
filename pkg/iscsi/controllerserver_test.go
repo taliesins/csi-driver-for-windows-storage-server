@@ -734,6 +734,10 @@ func TestCreateVolume_Idempotent_ExistingVolume(t *testing.T) {
 	mockBackend.ensureTargetFn = func(ctx context.Context, targetName, targetIQN string) (string, error) {
 		return firstNonEmpty(targetIQN, targetName), nil
 	}
+	mockBackend.configureTargetChapFn = func(ctx context.Context, targetName string, opts TargetChapOptions) error {
+		t.Fatalf("ConfigureTargetChap should not run for an idempotent existing volume")
+		return nil
+	}
 
 	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
 		Name: "test-volume",
@@ -744,6 +748,10 @@ func TestCreateVolume_Idempotent_ExistingVolume(t *testing.T) {
 			"targetPortal":   "10.0.0.1:3260",
 			"vhdxParentPath": "D:\\vhdx",
 			"iqnPrefix":      "iqn.2024-01.com.example",
+		},
+		Secrets: map[string]string{
+			"node.session.auth.username": "dbnode01",
+			"node.session.auth.password": "S3cret!",
 		},
 	})
 
