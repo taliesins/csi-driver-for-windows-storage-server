@@ -58,6 +58,9 @@ spec:
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --v=2
@@ -66,6 +69,9 @@ spec:
               mountPath: /csi
         - name: csi-attacher
           image: registry.k8s.io/sig-storage/csi-attacher:v4.4.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --v=2
@@ -74,6 +80,9 @@ spec:
               mountPath: /csi
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
@@ -174,6 +183,9 @@ spec:
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --v=2
@@ -182,6 +194,9 @@ spec:
               mountPath: /csi
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
@@ -282,6 +297,9 @@ spec:
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --v=2
@@ -290,6 +308,9 @@ spec:
               mountPath: /csi
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
@@ -390,6 +411,9 @@ spec:
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --v=2
@@ -398,6 +422,9 @@ spec:
               mountPath: /csi
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
@@ -498,6 +525,9 @@ spec:
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --v=2
@@ -506,6 +536,9 @@ spec:
               mountPath: /csi
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s

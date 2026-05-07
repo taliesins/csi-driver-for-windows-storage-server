@@ -602,6 +602,7 @@ func TestCreateVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 	var gotTargetName string
 	var gotChap TargetChapOptions
+	var configureTargetChapCalls int
 
 	mockBackend.createVirtualDiskFn = func(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
 		return "D:\\vhdx\\" + name + ".vhdx", sizeBytes, nil
@@ -610,6 +611,7 @@ func TestCreateVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 		return "iqn.1991-05.com.microsoft:win-storage-test-volume", nil
 	}
 	mockBackend.configureTargetChapFn = func(ctx context.Context, targetName string, opts TargetChapOptions) error {
+		configureTargetChapCalls++
 		gotTargetName = targetName
 		gotChap = opts
 		return nil
@@ -636,6 +638,7 @@ func TestCreateVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, resp)
+	assert.Equal(t, 1, configureTargetChapCalls)
 	assert.Equal(t, "test-volume", gotTargetName)
 	assert.Equal(t, TargetChapOptions{
 		ChapUser:          "dbnode01",
@@ -1433,8 +1436,10 @@ func TestControllerPublishVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 	var gotTargetName string
 	var gotChap TargetChapOptions
+	var configureTargetChapCalls int
 
 	mockBackend.configureTargetChapFn = func(ctx context.Context, targetName string, opts TargetChapOptions) error {
+		configureTargetChapCalls++
 		gotTargetName = targetName
 		gotChap = opts
 		return nil
@@ -1458,6 +1463,7 @@ func TestControllerPublishVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, resp)
+	assert.Equal(t, 1, configureTargetChapCalls)
 	assert.Equal(t, "iqn.2024-01.com.example:test-volume", gotTargetName)
 	assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cret!"}, gotChap)
 }
