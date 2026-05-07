@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,6 +126,60 @@ func NewWinRMBackend(host string, port int, https, insecure bool, user, pass str
 		PSModuleImport: "Import-Module IscsiTarget",
 		Timeout:        timeout,
 	}
+}
+
+func (b *WinRMBackend) Validate(ctx context.Context) error {
+	return b.ValidateConnection(ctx)
+}
+
+func (b *WinRMBackend) ValidateConnection(ctx context.Context) error {
+	if b == nil {
+		return fmt.Errorf("WinRM backend is nil")
+	}
+	if b.Endpoint == nil {
+		return fmt.Errorf("WinRM endpoint is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		timeout := b.Timeout
+		if timeout <= 0 {
+			timeout = 60 * time.Second
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	var out struct {
+		OK           bool   `json:"ok"`
+		ComputerName string `json:"computerName"`
+		UserName     string `json:"userName"`
+	}
+	err := b.runPS(ctx, `@{ ok=$true; computerName=[string]$env:COMPUTERNAME; userName=[string][Security.Principal.WindowsIdentity]::GetCurrent().Name }`, &out)
+	if err != nil {
+		return fmt.Errorf("WinRM connection validation failed for %s: %w", b.endpointURL(), err)
+	}
+	if !out.OK {
+		return fmt.Errorf("WinRM connection validation failed for %s: remote probe returned ok=false", b.endpointURL())
+	}
+	return nil
+}
+
+func (b *WinRMBackend) endpointURL() string {
+	if b == nil || b.Endpoint == nil {
+		return "<nil>"
+	}
+	scheme := "http"
+	if b.Endpoint.HTTPS {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(b.Endpoint.Host)
+	if host == "" {
+		host = "<empty-host>"
+	}
+	return fmt.Sprintf("%s://%s/wsman", scheme, net.JoinHostPort(host, strconv.Itoa(b.Endpoint.Port)))
 }
 
 func (b *WinRMBackend) clientParameters() (*winrm.Parameters, error) {

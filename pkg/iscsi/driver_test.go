@@ -487,8 +487,41 @@ func (f *fakeNonBlockingGRPCServer) Stop() {}
 
 func (f *fakeNonBlockingGRPCServer) ForceStop() {}
 
+type validatingMockBackend struct {
+	mockBackend
+	validateCalls int
+	validateErr   error
+}
+
+func (m *validatingMockBackend) Validate(ctx context.Context) error {
+	m.validateCalls++
+	return m.validateErr
+}
+
+func TestValidateBackendStartup(t *testing.T) {
+	t.Run("skips backend without validator", func(t *testing.T) {
+		require.NoError(t, validateBackendStartup(context.Background(), &mockBackend{}))
+	})
+
+	t.Run("calls validator", func(t *testing.T) {
+		backend := &validatingMockBackend{}
+
+		require.NoError(t, validateBackendStartup(context.Background(), backend))
+		assert.Equal(t, 1, backend.validateCalls)
+	})
+
+	t.Run("returns validator error", func(t *testing.T) {
+		backend := &validatingMockBackend{validateErr: errors.New("probe failed")}
+
+		err := validateBackendStartup(context.Background(), backend)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "probe failed")
+		assert.Equal(t, 1, backend.validateCalls)
+	})
+}
+
 func TestDriverRunWiresBackendAndServers(t *testing.T) {
-	backend := &mockBackend{}
+	backend := &validatingMockBackend{}
 	fakeServer := &fakeNonBlockingGRPCServer{}
 	t.Setenv(driverRunDirEnv, t.TempDir())
 
@@ -509,6 +542,7 @@ func TestDriverRunWiresBackendAndServers(t *testing.T) {
 	d.Run(DriverModeController)
 
 	assert.Same(t, backend, d.backend)
+	assert.Equal(t, 1, backend.validateCalls)
 	assert.Equal(t, DriverModeController, d.mode)
 	assert.Equal(t, "tcp://127.0.0.1:10000", fakeServer.endpoint)
 	assert.True(t, fakeServer.waited)

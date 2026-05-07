@@ -24,6 +24,7 @@ import (
 var (
 	newBackendFromEnvForRun        = newWinRMBackendFromEnv
 	newNonBlockingGRPCServerForRun = NewNonBlockingGRPCServer
+	validateBackendForRun          = validateBackendStartup
 )
 
 const driverRunDirEnv = "CSI_DRIVER_RUN_DIR"
@@ -61,6 +62,10 @@ type Backend interface {
 	RestoreSnapshotAsFileShare(ctx context.Context, snapshotID, destinationPath string) error
 	MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error
 	UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error
+}
+
+type startupBackendValidator interface {
+	Validate(ctx context.Context) error
 }
 
 type TargetChapOptions struct {
@@ -325,6 +330,10 @@ func (d *driver) serveController(ctx context.Context) {
 	if err != nil {
 		klog.Fatalf("failed to init WinRM backend: %v", err)
 	}
+	klog.Infof("validating WinRM backend configuration")
+	if err := validateBackendForRun(ctx, b); err != nil {
+		klog.Fatalf("failed to validate WinRM backend: %v", err)
+	}
 	d.backend = b
 
 	s := newNonBlockingGRPCServerForRun()
@@ -352,6 +361,14 @@ func waitForServerContext(ctx context.Context, server NonBlockingGRPCServer) {
 		}()
 	}
 	server.Wait()
+}
+
+func validateBackendStartup(ctx context.Context, b Backend) error {
+	validator, ok := b.(startupBackendValidator)
+	if !ok {
+		return nil
+	}
+	return validator.Validate(ctx)
 }
 
 func (d *driver) ensureRunDirectory() {

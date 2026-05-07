@@ -2,6 +2,7 @@ package iscsi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -69,6 +70,44 @@ func TestWinRMBackend_ClientParametersAuth(t *testing.T) {
 			require.NotNil(t, params)
 		})
 	}
+}
+
+func TestWinRMBackend_ValidateConnection(t *testing.T) {
+	t.Run("runs startup probe", func(t *testing.T) {
+		backend := NewWinRMBackend("storage.example.test", 5986, true, true, "admin", "pass", 10*time.Second)
+		called := false
+		backend.psRunner = func(ctx context.Context, script string, out any) error {
+			called = true
+			_, hasDeadline := ctx.Deadline()
+			assert.True(t, hasDeadline)
+			assert.Contains(t, script, "WindowsIdentity")
+			return json.Unmarshal([]byte(`{"ok":true,"computerName":"STORAGE01","userName":"STORAGE01\\admin"}`), out)
+		}
+
+		require.NoError(t, backend.ValidateConnection(context.Background()))
+		assert.True(t, called)
+	})
+
+	t.Run("wraps probe failure with endpoint", func(t *testing.T) {
+		backend := NewWinRMBackend("beast3-pc", 5986, true, true, "admin", "pass", 10*time.Second)
+		backend.psRunner = func(ctx context.Context, script string, out any) error {
+			return errors.New(`Post "https://beast3-pc:5986/wsman": dial tcp: lookup beast3-pc: no such host`)
+		}
+
+		err := backend.ValidateConnection(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "WinRM connection validation failed")
+		assert.Contains(t, err.Error(), "https://beast3-pc:5986/wsman")
+		assert.Contains(t, err.Error(), "no such host")
+	})
+
+	t.Run("rejects missing endpoint", func(t *testing.T) {
+		backend := &WinRMBackend{}
+
+		err := backend.ValidateConnection(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "WinRM endpoint is nil")
+	})
 }
 
 type fakeWinRMClient struct {
