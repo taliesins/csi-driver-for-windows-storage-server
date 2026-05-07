@@ -1,3 +1,14 @@
+## [1.3.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.2.0...v1.3.0) (2026-05-07)
+
+### Features
+
+* Validate attributes ([74017cf](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/74017cfd5ffefd5d028938d93dec70c9b7345e2c))
+* Validate attributes ([105a35a](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/105a35a0eecb1acdbee2a5de82985a384ed9845a))
+
+### Bug Fixes
+
+* CodeRabbit ([e534328](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/e534328095de414fbcc1f1189cabab0154b33e4d))
+
 ## [1.2.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.1.2...v1.2.0) (2026-05-07)
 
 ### Features
