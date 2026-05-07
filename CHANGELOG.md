@@ -1,3 +1,13 @@
+## [1.2.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.1.2...v1.2.0) (2026-05-07)
+
+### Features
+
+* Combine to a single driver ([66f0eef](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/66f0eef925cbb57e33ce2630a5b83d8642bbd709))
+
+### Bug Fixes
+
+* RabbitCode suggestions ([6b7dc0b](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/6b7dc0b42772bdd3e977a1c6160fd3dbc557348f))
+
 ## [1.1.2](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.1.1...v1.1.2) (2026-05-07)
 
 ### Bug Fixes
