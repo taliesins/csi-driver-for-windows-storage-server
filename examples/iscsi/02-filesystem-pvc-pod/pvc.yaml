@@ -9,4 +9,4 @@ spec:
   storageClassName: iscsi-for-windows-rwo
   resources:
     requests:
-      storage: 200Gi
+      storage: 1Gi

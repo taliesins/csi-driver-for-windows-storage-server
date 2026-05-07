@@ -176,6 +176,26 @@ func TestDiscoverydb(t *testing.T) {
 	})
 }
 
+func TestConnectorDiscoverTargetWithSessionChapOnly(t *testing.T) {
+	calls := captureExecWithTimeout(t, nil, nil)
+	conn := Connector{
+		DoDiscovery: true,
+		SessionSecrets: Secrets{
+			SecretsType: "chap",
+			UserName:    "session-user",
+			Password:    "session-pass",
+		},
+	}
+
+	require.NoError(t, conn.discoverTarget("iqn.2024-01.com.example:vol", "iface0", "10.0.0.1:3260"))
+	require.Len(t, *calls, 4)
+	assert.Equal(t, []string{"-m", "discoverydb", "-t", "sendtargets", "-p", "10.0.0.1:3260", "-I", "iface0", "-o", "new"}, (*calls)[0].args)
+	assert.Equal(t, []string{"-m", "discoverydb", "-t", "sendtargets", "-p", "10.0.0.1:3260", "-I", "iface0", "--discover"}, (*calls)[1].args)
+	assert.Equal(t, []string{"-m", "node", "-T", "iqn.2024-01.com.example:vol", "-p", "10.0.0.1:3260", "-I", "iface0", "-o", "new"}, (*calls)[2].args)
+	assert.Contains(t, (*calls)[3].args, "node.session.auth.username")
+	assert.Contains(t, (*calls)[3].args, "session-user")
+}
+
 func TestLogin(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		calls := captureExecWithTimeout(t, nil, nil)

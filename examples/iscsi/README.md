@@ -12,6 +12,7 @@ These examples use `iscsi.csi.windows.microsoft.com` and
 5. `05-expand-online`
 6. `06-raw-block`
 7. `07-static-pv-import`
+8. `08-static-nodeonly-true`
 
 iSCSI supports RWO filesystem volumes, raw block volumes, optional CHAP secrets,
 snapshots, restore, expansion, and static imports.

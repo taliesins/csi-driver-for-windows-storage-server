@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: static-nodeonly-smb-vhdx
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: smb-vhdx.csi.windows.microsoft.com
+    volumeHandle: "static-nodeonly-smb-vhdx"
+    nodeStageSecretRef:
+      name: static-smb-vhdx-credentials
+      namespace: apps
+    volumeAttributes:
+      protocol: "smb"
+      smbServer: "win-storage.lab.local"
+      smbShareName: "static-nodeonly-smb-vhdx"
+      smbVersion: "3.1.1"

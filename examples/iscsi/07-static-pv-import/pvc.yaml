@@ -9,5 +9,5 @@ spec:
   storageClassName: iscsi-for-windows-rwo
   resources:
     requests:
-      storage: 100Gi
+      storage: 1Gi
   volumeName: preprovisioned-iscsi

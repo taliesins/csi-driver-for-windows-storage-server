@@ -105,6 +105,28 @@ CSI node ID. When a pod moves to another node, Kubernetes attach calls cause the
 controller to remove the old node initiator from the Windows target and add the
 new node initiator before the node logs in.
 
+#### Optional: iSCSI CHAP
+
+iSCSI CHAP uses one Secret shared across the controller and node paths. The
+controller uses it to configure Windows target CHAP and reverse CHAP; the node
+uses it to configure Linux open-iscsi discovery and login.
+
+```yaml
+parameters:
+  csi.storage.k8s.io/provisioner-secret-name: "iscsi-chap"
+  csi.storage.k8s.io/provisioner-secret-namespace: "${pvc.namespace}"
+  csi.storage.k8s.io/controller-publish-secret-name: "iscsi-chap"
+  csi.storage.k8s.io/controller-publish-secret-namespace: "${pvc.namespace}"
+  csi.storage.k8s.io/node-stage-secret-name: "iscsi-chap"
+  csi.storage.k8s.io/node-stage-secret-namespace: "${pvc.namespace}"
+```
+
+The Windows target side is configured from `node.session.auth.username` and
+`node.session.auth.password`. Mutual CHAP uses
+`node.session.auth.username_in` and `node.session.auth.password_in` for reverse
+CHAP. Discovery CHAP keys configure Linux open-iscsi discovery; Windows Server
+iSCSI target CHAP is configured per target.
+
 ### Windows Server Bootstrap
 
 Run the PowerShell setup script from an elevated PowerShell session on the Windows Server:
@@ -328,14 +350,37 @@ make image
 
 #### 3. Install the driver manifests:
 
+The manifest installer creates the controller WinRM Secret from environment
+variables when `Secret/kube-system/csi-driver-winrm` does not already exist:
+
 ```sh
+export WINRM_HOST=win-storage.lab.local
+export WINRM_USER=csi-winrm-test
+export WINRM_PASSWORD='<password>'
+# Optional: override the PowerShell module import used by the WinRM backend.
+# export WINRM_PS_IMPORT='Import-Module IscsiTarget'
+
 ./deploy/install-driver.sh master local
 ```
+
+For static, pre-provisioned volumes where Windows storage is already configured,
+install only the Linux node side:
+
+```sh
+./deploy/install-driver.sh master local --node-only
+```
+
+Node-only mode skips the controller, WinRM Secret, and Windows-side setup. It
+also disables CSI attach for iSCSI, so static iSCSI PVs must include
+`targetPortal`, `iqn` or `targetIQN`, and `lun` in `volumeAttributes`, or encode
+those values in `volumeHandle` as an `iscsi://.../lun/<n>` URI. The Windows
+iSCSI target must already allow every Linux node initiator that may run the pod.
 
 #### 4. Check the driver pods:
 
 ```sh
-kubectl -n kube-system get pod -o wide -l app=csi-for-windows-server-node
+kubectl -n kube-system get pods -o wide \
+  -l app
 ```
 
 #### 5. Uninstall the driver:
@@ -359,12 +404,29 @@ The chart is published as an OCI artifact to GHCR at `oci://ghcr.io/taliesins/he
 
 WinRM connection details are required for the controller. Set `winrm.host` to the Windows storage server DNS name or IP address reachable from the Kubernetes cluster, and set `winrm.user` / `winrm.password` to the account configured by the Windows bootstrap script.
 
+By default, the chart deploys controller, node, and CSIDriver objects for all
+five drivers: iSCSI, NFS, NFS VHDX, SMB, and SMB VHDX. Disable individual
+drivers with `drivers.<name>.enabled=false` when you only need a subset.
+For static, pre-provisioned volumes, set `nodeOnly=true` to skip all controller
+and WinRM setup and install only the Linux node side.
+
 ```sh
 helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system \
   --set winrm.host=win-storage.lab.local \
   --set winrm.user=csi-winrm-test \
   --set-string winrm.password='<password>'
 ```
+
+Node-only Helm install:
+
+```sh
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system \
+  --set nodeOnly=true
+```
+
+In node-only mode, dynamic provisioning is disabled because no controller is
+running. Static iSCSI PVs must point at an existing Windows target and LUN, and
+the Windows target must already permit the Linux node initiators or use CHAP.
 
 #### 2. Specify a version
 

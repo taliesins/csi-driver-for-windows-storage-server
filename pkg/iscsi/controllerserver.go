@@ -36,6 +36,7 @@ Assumptions / contracts:
 
 - cs.Driver.backend provides the following methods (see your WinRM backend):
   EnsureTarget(ctx, targetName, targetIQN) (actualTargetIQN string, err error)
+  ConfigureTargetChap(ctx, targetName string, opts TargetChapOptions) error
   CreateVirtualDisk(ctx, name, parentDir string, sizeBytes int64) (vhdxPath string, actualSize int64, err error)
   MapDiskToTarget(ctx, targetName, vhdxPath string) (lun int32, err error)
   UnmapDiskFromTarget(ctx, targetName, vhdxPath string) error
@@ -529,6 +530,54 @@ func targetPortalAddress(targetPortal string, portalPort int) string {
 	return net.JoinHostPort(targetPortal, strconv.Itoa(portalPort))
 }
 
+func withIscsiVolumeContextParams(ctx map[string]string, params map[string]string) map[string]string {
+	if iface, ok := getStringParam(params, "iface"); ok {
+		ctx["iface"] = iface
+	}
+	return ctx
+}
+
+func targetChapOptionsFromSecrets(secrets map[string]string) (TargetChapOptions, error) {
+	chapUser := strings.TrimSpace(secrets["node.session.auth.username"])
+	chapSecret := strings.TrimSpace(secrets["node.session.auth.password"])
+	reverseChapUser := strings.TrimSpace(secrets["node.session.auth.username_in"])
+	reverseChapSecret := strings.TrimSpace(secrets["node.session.auth.password_in"])
+
+	opts := TargetChapOptions{}
+	if chapUser != "" || chapSecret != "" {
+		if chapUser == "" || chapSecret == "" {
+			return TargetChapOptions{}, status.Error(codes.InvalidArgument, "node.session.auth.username and node.session.auth.password must both be set for Windows target CHAP")
+		}
+		opts.ChapUser = chapUser
+		opts.ChapSecret = chapSecret
+	}
+	if reverseChapUser != "" || reverseChapSecret != "" {
+		if reverseChapUser == "" || reverseChapSecret == "" {
+			return TargetChapOptions{}, status.Error(codes.InvalidArgument, "node.session.auth.username_in and node.session.auth.password_in must both be set for Windows target reverse CHAP")
+		}
+		if opts.ChapUser == "" {
+			return TargetChapOptions{}, status.Error(codes.InvalidArgument, "reverse CHAP requires node.session.auth.username and node.session.auth.password")
+		}
+		opts.ReverseChapUser = reverseChapUser
+		opts.ReverseChapSecret = reverseChapSecret
+	}
+	return opts, nil
+}
+
+func (cs *ControllerServer) configureTargetChapFromSecrets(ctx context.Context, targetName string, secrets map[string]string) error {
+	opts, err := targetChapOptionsFromSecrets(secrets)
+	if err != nil {
+		return err
+	}
+	if !opts.Enabled() {
+		return nil
+	}
+	if err := cs.Driver.backend.ConfigureTargetChap(ctx, targetName, opts); err != nil {
+		return status.Errorf(codes.Internal, "ConfigureTargetChap: %v", err)
+	}
+	return nil
+}
+
 func volumeContextForVolumeID(v *VolumeID) map[string]string {
 	switch v.Protocol {
 	case ProtocolNFS:
@@ -649,6 +698,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		if targetIQN == "" {
 			return nil, status.Errorf(codes.Internal, "EnsureTarget returned an empty target IQN for target %q", targetName)
 		}
+		if err := cs.configureTargetChapFromSecrets(ctx, targetName, req.GetSecrets()); err != nil {
+			return nil, err
+		}
 		lun, err := cs.Driver.backend.MapDiskToTarget(ctx, targetName, exportedPath)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "MapDiskToTarget(exported): %v", err)
@@ -667,12 +719,12 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			Volume: &csi.Volume{
 				VolumeId:      vid,
 				CapacityBytes: vi.SizeBytes,
-				VolumeContext: map[string]string{
+				VolumeContext: withIscsiVolumeContextParams(map[string]string{
 					"targetPortal": targetPortalWithPort,
 					"iqn":          targetIQN,
 					"lun":          strconv.Itoa(int(lun)),
 					"source":       "snapshot",
-				},
+				}, params),
 				ContentSource: req.GetVolumeContentSource(),
 			},
 		}, nil
@@ -717,11 +769,11 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			Volume: &csi.Volume{
 				VolumeId:      vid,
 				CapacityBytes: existingSize,
-				VolumeContext: map[string]string{
+				VolumeContext: withIscsiVolumeContextParams(map[string]string{
 					"targetPortal": targetPortalWithPort,
 					"iqn":          targetIQN,
 					"lun":          strconv.Itoa(int(existingLUN)),
-				},
+				}, params),
 			},
 		}, nil
 	}
@@ -737,6 +789,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 	if targetIQN == "" {
 		return nil, status.Errorf(codes.Internal, "EnsureTarget returned an empty target IQN for target %q", targetName)
+	}
+	if err := cs.configureTargetChapFromSecrets(ctx, targetName, req.GetSecrets()); err != nil {
+		return nil, err
 	}
 	lun, err := cs.Driver.backend.MapDiskToTarget(ctx, targetName, vhdxPath)
 	if err != nil {
@@ -756,11 +811,11 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: actual,
-			VolumeContext: map[string]string{
+			VolumeContext: withIscsiVolumeContextParams(map[string]string{
 				"targetPortal": targetPortalWithPort,
 				"iqn":          targetIQN,
 				"lun":          strconv.Itoa(int(lun)),
-			},
+			}, params),
 		},
 	}, nil
 }
@@ -1130,6 +1185,9 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	targetName := targetNameFromVolID(id)
 	if targetName == "" || id.TargetIQN == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id is missing target name or target IQN")
+	}
+	if err := cs.configureTargetChapFromSecrets(ctx, targetName, req.GetSecrets()); err != nil {
+		return nil, err
 	}
 	if err := cs.Driver.backend.AllowInitiator(ctx, targetName, initiatorIQN); err != nil {
 		return nil, status.Errorf(codes.Internal, "AllowInitiator: %v", err)

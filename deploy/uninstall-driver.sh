@@ -21,11 +21,14 @@ use_local=false
 
 usage() {
   cat <<EOF
-Usage: $0 [version] [local] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
+Usage: $0 [version] [local] [--node-only] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
 
 Kerberos flags are accepted so install and uninstall commands can use the same
 argument set; uninstall deletes the daemonsets and does not need separate
 Kerberos cleanup.
+
+The --node-only flag is accepted for symmetry with install-driver.sh; uninstall
+deletes both regular and node-only CSIDriver manifests when present.
 EOF
 }
 
@@ -33,6 +36,8 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     local|--local)
       use_local=true
+      ;;
+    --node-only|--nodeonly)
       ;;
     --nfs-kerberos|--kerberos)
       ;;
@@ -76,9 +81,11 @@ delete_manifest "csi-smb-for-windows-node.yaml"
 delete_manifest "csi-nfs-vhdx-for-windows-node.yaml"
 delete_manifest "csi-nfs-for-windows-node.yaml"
 delete_manifest "csi-driver-for-windows-storage-server-node.yaml"
+delete_manifest "csi-driver-for-windows-storage-server-controller.yaml"
 delete_manifest "csi-smb-vhdx-for-windows-driverinfo.yaml"
 delete_manifest "csi-smb-for-windows-driverinfo.yaml"
 delete_manifest "csi-nfs-vhdx-for-windows-driverinfo.yaml"
 delete_manifest "csi-nfs-for-windows-driverinfo.yaml"
+delete_manifest "csi-driver-for-windows-storage-server-driverinfo-nodeonly.yaml"
 delete_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
 echo 'Windows storage CSI drivers uninstalled successfully.'

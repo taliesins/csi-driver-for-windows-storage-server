@@ -2,6 +2,7 @@ package iscsi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -69,6 +70,44 @@ func TestWinRMBackend_ClientParametersAuth(t *testing.T) {
 			require.NotNil(t, params)
 		})
 	}
+}
+
+func TestWinRMBackend_ValidateConnection(t *testing.T) {
+	t.Run("runs startup probe", func(t *testing.T) {
+		backend := NewWinRMBackend("storage.example.test", 5986, true, true, "admin", "pass", 10*time.Second)
+		called := false
+		backend.psRunner = func(ctx context.Context, script string, out any) error {
+			called = true
+			_, hasDeadline := ctx.Deadline()
+			assert.True(t, hasDeadline)
+			assert.Contains(t, script, "WindowsIdentity")
+			return json.Unmarshal([]byte(`{"ok":true,"computerName":"STORAGE01","userName":"STORAGE01\\admin"}`), out)
+		}
+
+		require.NoError(t, backend.ValidateConnection(context.Background()))
+		assert.True(t, called)
+	})
+
+	t.Run("wraps probe failure with endpoint", func(t *testing.T) {
+		backend := NewWinRMBackend("beast3-pc", 5986, true, true, "admin", "pass", 10*time.Second)
+		backend.psRunner = func(ctx context.Context, script string, out any) error {
+			return errors.New(`Post "https://beast3-pc:5986/wsman": dial tcp: lookup beast3-pc: no such host`)
+		}
+
+		err := backend.ValidateConnection(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "WinRM connection validation failed")
+		assert.Contains(t, err.Error(), "https://beast3-pc:5986/wsman")
+		assert.Contains(t, err.Error(), "no such host")
+	})
+
+	t.Run("rejects missing endpoint", func(t *testing.T) {
+		backend := &WinRMBackend{}
+
+		err := backend.ValidateConnection(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "WinRM endpoint is nil")
+	})
 }
 
 type fakeWinRMClient struct {
@@ -311,6 +350,43 @@ func TestWinRMBackend_EnsureTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWinRMBackend_ConfigureTargetChap(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		assert.Contains(t, script, "Set-IscsiServerTarget @params")
+		assert.Contains(t, script, "$targetName = 'target-001'")
+		assert.Contains(t, script, "TargetName=$targetName")
+		assert.Contains(t, script, "$params.EnableChap = $true")
+		assert.Contains(t, script, "$params.Chap = [pscredential]::new('dbnode01', $chapSecret)")
+		assert.Contains(t, script, "$params.EnableReverseChap = $true")
+		assert.Contains(t, script, "$params.ReverseChap = [pscredential]::new('targetid', $reverseChapSecret)")
+		assert.Contains(t, script, "S3cret!")
+		assert.Contains(t, script, "TargetS3cret!")
+		if out != nil {
+			copyTestOutput(out, map[string]any{"ok": true})
+		}
+		return nil
+	}
+
+	err := backend.ConfigureTargetChap(context.Background(), "target-001", TargetChapOptions{
+		ChapUser:          "dbnode01",
+		ChapSecret:        "S3cret!",
+		ReverseChapUser:   "targetid",
+		ReverseChapSecret: "TargetS3cret!",
+	})
+	require.NoError(t, err)
+}
+
+func TestWinRMBackend_ConfigureTargetChapNoopWhenEmpty(t *testing.T) {
+	backend := newUnitWinRMBackend()
+	backend.psRunner = func(ctx context.Context, script string, out any) error {
+		t.Fatalf("ConfigureTargetChap should not run PowerShell when options are empty")
+		return nil
+	}
+
+	require.NoError(t, backend.ConfigureTargetChap(context.Background(), "target-001", TargetChapOptions{}))
 }
 
 // ---------------------------------------------------------------------------

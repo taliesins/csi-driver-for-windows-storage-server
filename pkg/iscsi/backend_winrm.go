@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,6 +126,60 @@ func NewWinRMBackend(host string, port int, https, insecure bool, user, pass str
 		PSModuleImport: "Import-Module IscsiTarget",
 		Timeout:        timeout,
 	}
+}
+
+func (b *WinRMBackend) Validate(ctx context.Context) error {
+	return b.ValidateConnection(ctx)
+}
+
+func (b *WinRMBackend) ValidateConnection(ctx context.Context) error {
+	if b == nil {
+		return fmt.Errorf("WinRM backend is nil")
+	}
+	if b.Endpoint == nil {
+		return fmt.Errorf("WinRM endpoint is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		timeout := b.Timeout
+		if timeout <= 0 {
+			timeout = 60 * time.Second
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	var out struct {
+		OK           bool   `json:"ok"`
+		ComputerName string `json:"computerName"`
+		UserName     string `json:"userName"`
+	}
+	err := b.runPS(ctx, `@{ ok=$true; computerName=[string]$env:COMPUTERNAME; userName=[string][Security.Principal.WindowsIdentity]::GetCurrent().Name }`, &out)
+	if err != nil {
+		return fmt.Errorf("WinRM connection validation failed for %s: %w", b.endpointURL(), err)
+	}
+	if !out.OK {
+		return fmt.Errorf("WinRM connection validation failed for %s: remote probe returned ok=false", b.endpointURL())
+	}
+	return nil
+}
+
+func (b *WinRMBackend) endpointURL() string {
+	if b == nil || b.Endpoint == nil {
+		return "<nil>"
+	}
+	scheme := "http"
+	if b.Endpoint.HTTPS {
+		scheme = "https"
+	}
+	host := strings.TrimSpace(b.Endpoint.Host)
+	if host == "" {
+		host = "<empty-host>"
+	}
+	return fmt.Sprintf("%s://%s/wsman", scheme, net.JoinHostPort(host, strconv.Itoa(b.Endpoint.Port)))
 }
 
 func (b *WinRMBackend) clientParameters() (*winrm.Parameters, error) {
@@ -246,6 +302,34 @@ if (-not [string]::IsNullOrWhiteSpace($targetIQN) -and [string]$t.TargetIqn -ne 
 		return "", fmt.Errorf("target %q has no TargetIqn", targetName)
 	}
 	return out.TargetIQN, nil
+}
+
+func (b *WinRMBackend) ConfigureTargetChap(ctx context.Context, targetName string, opts TargetChapOptions) error {
+	targetName = strings.TrimSpace(targetName)
+	if targetName == "" {
+		return fmt.Errorf("target name is required")
+	}
+	if !opts.Enabled() {
+		return nil
+	}
+	s := fmt.Sprintf(`
+$targetName = '%s'
+$params = @{ ComputerName=$IscsiTargetComputerName; TargetName=$targetName }
+if (-not [string]::IsNullOrWhiteSpace('%s')) {
+  $chapSecret = ConvertTo-SecureString -String '%s' -AsPlainText -Force
+  $params.EnableChap = $true
+  $params.Chap = [pscredential]::new('%s', $chapSecret)
+}
+if (-not [string]::IsNullOrWhiteSpace('%s')) {
+  $reverseChapSecret = ConvertTo-SecureString -String '%s' -AsPlainText -Force
+  $params.EnableReverseChap = $true
+  $params.ReverseChap = [pscredential]::new('%s', $reverseChapSecret)
+}
+Set-IscsiServerTarget @params | Out-Null
+@{ ok = $true }
+`, escapePS(targetName), escapePS(opts.ChapUser), escapePS(opts.ChapSecret), escapePS(opts.ChapUser), escapePS(opts.ReverseChapUser), escapePS(opts.ReverseChapSecret), escapePS(opts.ReverseChapUser))
+	var out map[string]any
+	return b.runPS(ctx, s, &out)
 }
 
 func (b *WinRMBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {

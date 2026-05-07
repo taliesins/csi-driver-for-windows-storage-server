@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: static-nodeonly-nfs-vhdx-pod
+  namespace: apps
+spec:
+  restartPolicy: Always
+  containers:
+    - name: app
+      image: registry.k8s.io/busybox
+      command: ["/bin/sh", "-c", "while true; do date >> /data/heartbeat.log; sleep 30; done"]
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        runAsUser: 1000
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: static-nodeonly-nfs-vhdx-claim

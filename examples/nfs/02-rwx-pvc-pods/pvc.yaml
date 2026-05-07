@@ -9,4 +9,4 @@ spec:
   storageClassName: nfs-for-windows-rwx
   resources:
     requests:
-      storage: 100Gi
+      storage: 1Gi

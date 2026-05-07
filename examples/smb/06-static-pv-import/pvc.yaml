@@ -9,5 +9,5 @@ spec:
   storageClassName: smb-for-windows-rwx
   resources:
     requests:
-      storage: 100Gi
+      storage: 1Gi
   volumeName: preprovisioned-smb

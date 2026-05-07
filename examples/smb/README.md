@@ -11,6 +11,7 @@ point at an existing SMB share path.
 2. `02-rwx-pvc-pods`
 3. `05-expand-online`
 4. `06-static-pv-import`
+5. `07-static-nodeonly-true`
 
 Directory-backed SMB supports RWX filesystem volumes, node-stage mount
 credentials, expansion, and static imports. Snapshots and restore are provided

@@ -1,9 +1,15 @@
+{{- $root := . -}}
+{{- range $key, $driver := .Values.drivers }}
+{{- if $driver.enabled }}
+---
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
-  name: iscsi.csi.windows.microsoft.com
+  name: {{ $driver.name }}
 spec:
-  attachRequired: true
+  attachRequired: {{ and (not $root.Values.nodeOnly) $driver.attachRequired }}
   volumeLifecycleModes:
     - Persistent
     - Ephemeral
+{{- end }}
+{{- end }}

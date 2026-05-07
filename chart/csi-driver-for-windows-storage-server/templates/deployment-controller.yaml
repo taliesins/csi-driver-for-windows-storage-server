@@ -1,44 +1,83 @@
+{{- if not .Values.nodeOnly }}
+{{- $root := . -}}
+{{- range $key, $driver := .Values.drivers }}
+{{- if $driver.enabled }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "csi-driver-for-windows-storage-server.controllerName" . }}
+  name: {{ include "csi-driver-for-windows-storage-server.driverControllerName" (dict "root" $root "key" $key) }}
   labels:
-    {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 4 }}
+    {{- include "csi-driver-for-windows-storage-server.labels" $root | nindent 4 }}
+    app.kubernetes.io/csi-driver: {{ $key | quote }}
+    app.kubernetes.io/component: "controller"
 spec:
-  replicas: {{ .Values.controller.replicas }}
+  replicas: {{ $root.Values.controller.replicas }}
   selector:
     matchLabels:
-      {{- include "csi-driver-for-windows-storage-server.selectorLabels" . | nindent 6 }}
+      {{- include "csi-driver-for-windows-storage-server.driverSelectorLabels" (dict "root" $root "key" $key "component" "controller") | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "csi-driver-for-windows-storage-server.labels" . | nindent 8 }}
+        {{- include "csi-driver-for-windows-storage-server.labels" $root | nindent 8 }}
+        app.kubernetes.io/csi-driver: {{ $key | quote }}
+        app.kubernetes.io/component: "controller"
     spec:
-      serviceAccountName: {{ include "csi-driver-for-windows-storage-server.controllerServiceAccountName" . }}
+      serviceAccountName: {{ include "csi-driver-for-windows-storage-server.controllerServiceAccountName" $root }}
       containers:
         - name: csi-provisioner
-          image: {{ .Values.sidecars.provisioner.image | quote }}
+          image: {{ $root.Values.sidecars.provisioner.image | quote }}
           args:
             - --csi-address=/csi/csi.sock
-            - --v={{ .Values.sidecars.logLevel }}
+            - --v={{ $root.Values.sidecars.logLevel }}
+            {{- if gt (int $root.Values.controller.replicas) 1 }}
+            - --leader-election=true
+            - --leader-election-namespace=$(POD_NAMESPACE)
+            - --leader-election-lease-duration={{ $root.Values.controller.leaderElection.leaseDuration }}
+            - --leader-election-renew-deadline={{ $root.Values.controller.leaderElection.renewDeadline }}
+            - --leader-election-retry-period={{ $root.Values.controller.leaderElection.retryPeriod }}
+            {{- end }}
+          {{- if gt (int $root.Values.controller.replicas) 1 }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          {{- end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+        {{- if $driver.attachRequired }}
         - name: csi-attacher
-          image: {{ .Values.sidecars.attacher.image | quote }}
+          image: {{ $root.Values.sidecars.attacher.image | quote }}
           args:
             - --csi-address=/csi/csi.sock
-            - --v={{ .Values.sidecars.logLevel }}
+            - --v={{ $root.Values.sidecars.logLevel }}
+            {{- if gt (int $root.Values.controller.replicas) 1 }}
+            - --leader-election=true
+            - --leader-election-namespace=$(POD_NAMESPACE)
+            - --leader-election-lease-duration={{ $root.Values.controller.leaderElection.leaseDuration }}
+            - --leader-election-renew-deadline={{ $root.Values.controller.leaderElection.renewDeadline }}
+            - --leader-election-retry-period={{ $root.Values.controller.leaderElection.retryPeriod }}
+            {{- end }}
+          {{- if gt (int $root.Values.controller.replicas) 1 }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          {{- end }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+        {{- end }}
         - name: liveness-probe
-          image: {{ .Values.sidecars.livenessProbe.image | quote }}
+          image: {{ $root.Values.sidecars.livenessProbe.image | quote }}
           args:
             - --csi-address=/csi/csi.sock
             - --probe-timeout=3s
             - --health-port=29752
-            - --v={{ .Values.sidecars.logLevel }}
+            - --v={{ $root.Values.sidecars.logLevel }}
           ports:
             - containerPort: 29752
               name: healthz
@@ -47,24 +86,25 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: controller-driver
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default $root.Chart.AppVersion }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
           args:
             - --endpoint=$(CSI_ENDPOINT)
             - --mode=controller
-            {{- if gt (int .Values.controller.replicas) 1 }}
+            - --drivername={{ $driver.name }}
+            {{- if gt (int $root.Values.controller.replicas) 1 }}
             - --leader-election=true
-            - --leader-election-name={{ include "csi-driver-for-windows-storage-server.controllerName" . }}
+            - --leader-election-name={{ include "csi-driver-for-windows-storage-server.driverControllerName" (dict "root" $root "key" $key) }}
             - --leader-election-namespace=$(POD_NAMESPACE)
             - --leader-election-identity=$(POD_NAME)
-            - --leader-election-lease-duration={{ .Values.controller.leaderElection.leaseDuration }}
-            - --leader-election-renew-deadline={{ .Values.controller.leaderElection.renewDeadline }}
-            - --leader-election-retry-period={{ .Values.controller.leaderElection.retryPeriod }}
+            - --leader-election-lease-duration={{ $root.Values.controller.leaderElection.leaseDuration }}
+            - --leader-election-renew-deadline={{ $root.Values.controller.leaderElection.renewDeadline }}
+            - --leader-election-retry-period={{ $root.Values.controller.leaderElection.retryPeriod }}
             {{- end }}
           env:
             - name: CSI_ENDPOINT
               value: "unix:///csi/csi.sock"
-            {{- if gt (int .Values.controller.replicas) 1 }}
+            {{- if gt (int $root.Values.controller.replicas) 1 }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -74,12 +114,13 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
             {{- end }}
-            {{- include "csi-driver-for-windows-storage-server.winrmEnv" . | nindent 12 }}
+            {{- include "csi-driver-for-windows-storage-server.winrmEnv" $root | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
       volumes:
         - name: socket-dir
-          hostPath:
-            path: /var/lib/kubelet/plugins/csi-driver-for-windows-storage-server
-            type: DirectoryOrCreate
+          emptyDir: {}
+{{- end }}
+{{- end }}
+{{- end }}

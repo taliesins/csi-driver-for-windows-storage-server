@@ -1,6 +1,6 @@
 # SMB RWX PVC and Pods
 
-Creates a 100Gi ReadWriteMany PVC and mounts it from two pods.
+Creates a 1Gi ReadWriteMany PVC and mounts it from two pods.
 
 ## Apply
 
