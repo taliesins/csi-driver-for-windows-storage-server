@@ -132,8 +132,9 @@ parameters:
 The Windows target side is configured from `node.session.auth.username` and
 `node.session.auth.password`. Mutual CHAP uses
 `node.session.auth.username_in` and `node.session.auth.password_in` for reverse
-CHAP. Discovery CHAP keys configure Linux open-iscsi discovery; Windows Server
-iSCSI target CHAP is configured per target.
+CHAP. Windows requires CHAP and reverse CHAP secrets to be 12-16 characters.
+Discovery CHAP keys configure Linux open-iscsi discovery; Windows Server iSCSI
+target CHAP is configured per target.
 
 ### Windows Server Bootstrap
 
@@ -256,9 +257,11 @@ required because the daemonsets are deleted:
 
 ### Development Environment
 
-This repository includes a devcontainer with all required tools (Go, Docker, Make, pre-commit, etc.) pre-installed. If you open this project in GitHub Codespaces or a compatible devcontainer environment, you do not need to install any prerequisites manually.
+This repository includes a devcontainer with all required tools (Go, Docker, Helm, helm-docs, Make, pre-commit, etc.) pre-installed. If you open this project in GitHub Codespaces or a compatible devcontainer environment, you do not need to install any prerequisites manually.
 
 If you are not using the devcontainer, ensure you have Go, Docker, and Make installed.
+
+For the full local and cluster setup flow, see the [project setup guide](./docs/setup.md). For generated Helm values documentation, see the [chart README](./chart/csi-driver-for-windows-storage-server/README.md).
 
 ### Running Unit Tests
 
@@ -301,6 +304,9 @@ The project provides a Makefile for common developer tasks.
 |--------------------|---------------------------------------------|
 | make build         | Build the driver binary                     |
 | make test          | Run all Go tests                            |
+| make chart-docs    | Regenerate the Helm chart README            |
+| make chart-lint    | Lint the Helm chart                         |
+| make docs          | Regenerate project-generated documentation  |
 | make lint          | Run pre-commit hooks (lint, format, etc.)   |
 | make pre-commit    | Install pre-commit git hooks                |
 | make image         | Build the Docker image                      |
@@ -403,6 +409,8 @@ kubectl -n kube-system get pods -o wide \
 
 - Install by [kubectl](./docs/install-csi-driver-master.md)
 - Install by [Helm](./docs/install-csi-driver-master.md)
+- Review [Helm chart values](./chart/csi-driver-for-windows-storage-server/README.md)
+- Prepare a local or cluster environment with the [project setup guide](./docs/setup.md)
 
 ### Install via Helm (OCI / GHCR)
 
@@ -449,7 +457,7 @@ helm upgrade --install --create-namespace csi-driver-for-windows-storage-server 
 
 #### 3. Customize values (optional)
 
-Override any value from [`values.yaml`](./chart/csi-driver-for-windows-storage-server/values.yaml) by putting your changes in a values file, for example `csi-driver-overrides.yaml`:
+Override any value from the [generated chart values documentation](./chart/csi-driver-for-windows-storage-server/README.md) or [`values.yaml`](./chart/csi-driver-for-windows-storage-server/values.yaml) by putting your changes in a values file, for example `csi-driver-overrides.yaml`:
 
 ```yaml
 image:

@@ -20,7 +20,7 @@ ver="master"
 use_local=false
 
 usage() {
-  cat <<EOF
+  cat << EOF
 Usage: $0 [version] [local] [--node-only] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
 
 Kerberos flags are accepted so install and uninstall commands can use the same
@@ -34,14 +34,12 @@ EOF
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    local|--local)
+    local | --local)
       use_local=true
       ;;
-    --node-only|--nodeonly)
-      ;;
-    --nfs-kerberos|--kerberos)
-      ;;
-    --nfs-kerberos-flavor|--kerberos-flavor)
+    --node-only | --nodeonly) ;;
+    --nfs-kerberos | --kerberos) ;;
+    --nfs-kerberos-flavor | --kerberos-flavor)
       if [[ "$#" -lt 2 ]]; then
         echo "missing value for $1" >&2
         usage >&2
@@ -49,7 +47,7 @@ while [[ "$#" -gt 0 ]]; do
       fi
       shift
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;

@@ -13,3 +13,7 @@ done
 echo "local_workspace_path=${local_workspace_path}"
 
 #git config --global --add safe.directory /workspace
+
+if [ -d /workspace/.git ]; then
+  pre-commit install
+fi

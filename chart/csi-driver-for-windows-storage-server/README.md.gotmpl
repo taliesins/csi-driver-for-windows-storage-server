@@ -1,0 +1,30 @@
+{{ template "chart.header" . }}
+{{ template "chart.description" . }}
+
+{{ template "chart.versionBadge" . }}{{ template "chart.typeBadge" . }}{{ template "chart.appVersionBadge" . }}
+
+## Installing the Chart
+
+Install the published OCI chart from GHCR:
+
+```sh
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n kube-system \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
+```
+
+Install the local chart while developing:
+
+```sh
+helm upgrade --install --create-namespace csi-driver-for-windows-storage-server ./chart/csi-driver-for-windows-storage-server -n kube-system \
+  --set winrm.host=win-storage.lab.local \
+  --set winrm.user=csi-winrm-test \
+  --set-string winrm.password='<password>'
+```
+
+Set `drivers.windows-storage.needsIscsi=false` for NFS/SMB-only installs that do not have open-iscsi configured on every Linux node. Set `nodeOnly=true` only for static, pre-provisioned volumes where no controller-side WinRM access is required.
+
+{{ template "chart.valuesSection" . }}
+
+{{ template "helm-docs.versionFooter" . }}

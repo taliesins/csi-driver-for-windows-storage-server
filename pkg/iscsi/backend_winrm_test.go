@@ -362,8 +362,8 @@ func TestWinRMBackend_ConfigureTargetChap(t *testing.T) {
 		assert.Contains(t, script, "$params.Chap = [pscredential]::new('dbnode01', $chapSecret)")
 		assert.Contains(t, script, "$params.EnableReverseChap = $true")
 		assert.Contains(t, script, "$params.ReverseChap = [pscredential]::new('targetid', $reverseChapSecret)")
-		assert.Contains(t, script, "S3cret!")
-		assert.Contains(t, script, "TargetS3cret!")
+		assert.Contains(t, script, "S3cretPass123")
+		assert.Contains(t, script, "TargetPass123")
 		if out != nil {
 			copyTestOutput(out, map[string]any{"ok": true})
 		}
@@ -372,9 +372,9 @@ func TestWinRMBackend_ConfigureTargetChap(t *testing.T) {
 
 	err := backend.ConfigureTargetChap(context.Background(), "target-001", TargetChapOptions{
 		ChapUser:          "dbnode01",
-		ChapSecret:        "S3cret!",
+		ChapSecret:        "S3cretPass123",
 		ReverseChapUser:   "targetid",
-		ReverseChapSecret: "TargetS3cret!",
+		ReverseChapSecret: "TargetPass123",
 	})
 	require.NoError(t, err)
 }

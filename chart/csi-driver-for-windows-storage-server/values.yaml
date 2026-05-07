@@ -1,73 +1,104 @@
-# Controller-specific ServiceAccount
+# -- Install only node-side resources. Use this for static, pre-provisioned volumes when no controller or WinRM Secret is needed.
 nodeOnly: false
 
 controller:
+  # -- Number of controller replicas. Values greater than 1 enable leader election.
   replicas: 1
   leaderElection:
+    # -- Kubernetes Lease duration used when controller.replicas is greater than 1.
     leaseDuration: 15s
+    # -- Kubernetes Lease renew deadline used when controller.replicas is greater than 1.
     renewDeadline: 10s
+    # -- Kubernetes Lease retry period used when controller.replicas is greater than 1.
     retryPeriod: 2s
   serviceAccount:
+    # -- Create the controller ServiceAccount.
     create: true
+    # -- Automount the controller ServiceAccount token.
     automount: true
+    # -- Extra annotations to add to the controller ServiceAccount.
     annotations: {}
+    # -- Existing controller ServiceAccount name. When empty, the chart creates or uses the generated name.
     name: ""
 
-# Node-specific ServiceAccount
 node:
+  # -- Host path on each Kubernetes node containing the open-iscsi initiator name.
   initiatorNamePath: /etc/iscsi/initiatorname.iscsi
   serviceAccount:
+    # -- Create the node ServiceAccount.
     create: true
+    # -- Automount the node ServiceAccount token.
     automount: true
+    # -- Extra annotations to add to the node ServiceAccount.
     annotations: {}
+    # -- Existing node ServiceAccount name. When empty, the chart creates or uses the generated name.
     name: ""
 
 drivers:
   windows-storage:
+    # -- Render the consolidated Windows Storage CSI driver resources.
     enabled: true
+    # -- CSI driver name advertised to Kubernetes.
     name: windows-storage.csi.windows.microsoft.com
+    # -- Whether Kubernetes should use ControllerPublishVolume before node staging/publishing.
     attachRequired: true
-    # Enabled by default so the node plugin installs the host iSCSI plumbing and
-    # reads the open-iscsi initiator name from node.initiatorNamePath. Set false
-    # for NFS/SMB-only installs to use the Kubernetes node name instead.
+    # -- Enable iSCSI host integration. When true, the node plugin reads the open-iscsi initiator from node.initiatorNamePath; set false for NFS/SMB-only installs.
     needsIscsi: true
+    # -- HTTP port used by the liveness probe sidecar.
     livenessPort: 29753
 
 sidecars:
+  # -- Verbosity passed to CSI sidecars.
   logLevel: 2
   provisioner:
+    # -- CSI external-provisioner image.
     image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
   attacher:
+    # -- CSI external-attacher image.
     image: registry.k8s.io/sig-storage/csi-attacher:v4.4.2
   nodeDriverRegistrar:
+    # -- CSI node-driver-registrar image.
     image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0
   livenessProbe:
+    # -- CSI livenessprobe image.
     image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
 
-# Default values for csi-driver-for-windows-storage-server
 image:
+  # -- Driver image repository.
   repository: ghcr.io/taliesins/csi-driver-for-windows-storage-server
+  # -- Driver image pull policy.
   pullPolicy: IfNotPresent
+  # -- Driver image tag. Defaults to chart appVersion when empty.
   tag: ""
 
+# -- Override the chart name suffix.
 nameOverride: ""
+# -- Override the fully qualified resource name.
 fullnameOverride: ""
 
-# If you need to pull images from a private registry, set this
+# -- Optional image pull secrets for the driver and sidecars.
 imagePullSecrets: []
 
 winrm:
+  # -- Windows storage server hostname or IP address reachable from the controller.
   host: ""
+  # -- WinRM port.
   port: 5986
+  # -- Use HTTPS for WinRM.
   tls: true
+  # -- Skip WinRM TLS certificate validation. Useful with self-signed Windows listener certificates.
   insecure: true
+  # -- WinRM authentication mechanism. Supported values are basic and ntlm.
   auth: basic
+  # -- WinRM request timeout.
   timeout: 60s
+  # -- Optional PowerShell module import path or statement run before backend commands.
   psImport: ""
 
-  # Use an existing Secret with WINRM_USER and WINRM_PASSWORD keys.
+  # -- Existing Secret containing WINRM_USER and WINRM_PASSWORD keys.
   existingSecret: ""
 
-  # When existingSecret is empty, the chart creates a Secret using winrm.user and winrm.password.
+  # -- WinRM username used when winrm.existingSecret is empty.
   user: ""
+  # -- WinRM password used when winrm.existingSecret is empty.
   password: ""

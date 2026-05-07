@@ -183,11 +183,12 @@ func TestGetenvDefault(t *testing.T) {
 	assert.Equal(t, "value", getenvDefault("CSI_TEST_ENV", "fallback"))
 }
 
-func TestParseBoolDefault(t *testing.T) {
+func TestParseBoolEnv(t *testing.T) {
 	tests := []struct {
 		input string
 		def   bool
 		want  bool
+		err   bool
 	}{
 		{input: "", def: true, want: true},
 		{input: "true", want: true},
@@ -198,11 +199,18 @@ func TestParseBoolDefault(t *testing.T) {
 		{input: "NO", def: true, want: false},
 		{input: "off", def: true, want: false},
 		{input: "0", def: true, want: false},
-		{input: "not-bool", def: true, want: true},
+		{input: "not-bool", def: true, err: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.want, parseBoolDefault(tt.input, tt.def))
+			t.Setenv("TEST_BOOL", tt.input)
+			got, err := parseBoolEnv("TEST_BOOL", tt.def)
+			if tt.err {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -329,6 +337,55 @@ func TestNewWinRMBackendFromEnv_CustomPortAndErrors(t *testing.T) {
 		_, err := newWinRMBackendFromEnv()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid WINRM_PORT")
+	})
+
+	t.Run("port out of range", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_PORT", "70000")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid WINRM_PORT")
+	})
+
+	t.Run("bad tls boolean", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_TLS", "maybe")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "WINRM_TLS")
+	})
+
+	t.Run("bad insecure boolean", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_INSECURE", "maybe")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "WINRM_INSECURE")
+	})
+
+	t.Run("bad timeout", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_USER", "admin")
+		t.Setenv("WINRM_PASSWORD", "secret")
+		t.Setenv("WINRM_TIMEOUT", "soon")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "WINRM_TIMEOUT")
+	})
+
+	t.Run("bad auth", func(t *testing.T) {
+		clearWinRMEnv(t)
+		t.Setenv("WINRM_HOST", "storage.example.test")
+		t.Setenv("WINRM_USER", "admin")
+		t.Setenv("WINRM_PASSWORD", "secret")
+		t.Setenv("WINRM_AUTH", "kerberos")
+		_, err := newWinRMBackendFromEnv()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "WINRM_AUTH")
 	})
 
 	t.Run("missing credentials", func(t *testing.T) {
@@ -804,7 +861,7 @@ func TestEnsureFile_AlreadyExists(t *testing.T) {
 	// Create the file first
 	f, err := os.Create(targetPath)
 	assert.NoError(t, err)
-	f.Close()
+	assert.NoError(t, f.Close())
 
 	// Calling again should succeed
 	err = ensureFile(targetPath)

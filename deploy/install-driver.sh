@@ -23,7 +23,7 @@ nfs_kerberos_flavor="krb5"
 node_only=false
 
 usage() {
-  cat <<EOF
+  cat << EOF
 Usage: $0 [version] [local] [--node-only] [--nfs-kerberos] [--nfs-kerberos-flavor krb5|krb5i|krb5p]
 
 Examples:
@@ -44,16 +44,16 @@ EOF
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    local|--local)
+    local | --local)
       use_local=true
       ;;
-    --node-only|--nodeonly)
+    --node-only | --nodeonly)
       node_only=true
       ;;
-    --nfs-kerberos|--kerberos)
+    --nfs-kerberos | --kerberos)
       nfs_kerberos=true
       ;;
-    --nfs-kerberos-flavor|--kerberos-flavor)
+    --nfs-kerberos-flavor | --kerberos-flavor)
       if [[ "$#" -lt 2 ]]; then
         echo "missing value for $1" >&2
         usage >&2
@@ -62,7 +62,7 @@ while [[ "$#" -gt 0 ]]; do
       nfs_kerberos_flavor="$2"
       shift
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -79,8 +79,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 case "$nfs_kerberos_flavor" in
-  krb5|krb5i|krb5p)
-    ;;
+  krb5 | krb5i | krb5p) ;;
   *)
     echo "invalid --nfs-kerberos-flavor '$nfs_kerberos_flavor'; expected krb5, krb5i, or krb5p" >&2
     exit 1
@@ -104,9 +103,9 @@ chart_app_version() {
   if [[ "$use_local" == true ]]; then
     sed -nE 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' "$chart_path" | head -n 1
   else
-    curl -fsSL "https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/$ver/$chart_path" \
-      | sed -nE 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' \
-      | head -n 1
+    curl -fsSL "https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/$ver/$chart_path" |
+      sed -nE 's/^appVersion:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/p' |
+      head -n 1
   fi
 }
 
@@ -120,18 +119,18 @@ apply_controller_manifest() {
 
   if [[ "$use_local" == true ]]; then
     sed -E "s#image: ${driver_image_repository}:[^[:space:]]+#image: ${driver_image_repository}:${app_version}#g" \
-      "$repo/csi-driver-for-windows-storage-server-controller.yaml" \
-      | kubectl apply -f -
+      "$repo/csi-driver-for-windows-storage-server-controller.yaml" |
+      kubectl apply -f -
   else
-    curl -fsSL "$repo/csi-driver-for-windows-storage-server-controller.yaml" \
-      | sed -E "s#image: ${driver_image_repository}:[^[:space:]]+#image: ${driver_image_repository}:${app_version}#g" \
-      | kubectl apply -f -
+    curl -fsSL "$repo/csi-driver-for-windows-storage-server-controller.yaml" |
+      sed -E "s#image: ${driver_image_repository}:[^[:space:]]+#image: ${driver_image_repository}:${app_version}#g" |
+      kubectl apply -f -
   fi
 }
 
 ensure_winrm_secret() {
   if [[ -z "${WINRM_HOST:-}" || -z "${WINRM_USER:-}" || -z "${WINRM_PASSWORD:-}" ]]; then
-    if kubectl -n kube-system get secret csi-driver-winrm >/dev/null 2>&1; then
+    if kubectl -n kube-system get secret csi-driver-winrm > /dev/null 2>&1; then
       return
     fi
     echo "missing Secret/kube-system/csi-driver-winrm and WINRM_HOST/WINRM_USER/WINRM_PASSWORD are not all set" >&2

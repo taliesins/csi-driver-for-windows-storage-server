@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -24,6 +26,14 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+const (
+	chapSecretMinLength = 12
+	chapSecretMaxLength = 16
+	maxTCPPort          = 65535
+)
+
+var iqnPrefixPattern = regexp.MustCompile(`^iqn\.[0-9]{4}-[0-9]{2}\.[A-Za-z0-9][A-Za-z0-9.-]*$`)
 
 // ControllerServer implements the CSI Controller service.
 type ControllerServer struct {
@@ -206,6 +216,157 @@ func parseUint32Param(params map[string]string, key string) (uint32, error) {
 	return uint32(v), nil
 }
 
+func validateTCPPort(key string, port int) error {
+	if port < 1 || port > maxTCPPort {
+		return status.Errorf(codes.InvalidArgument, "parameter %s must be between 1 and 65535", key)
+	}
+	return nil
+}
+
+func parseTCPPortParam(params map[string]string, key string, fallback int) (int, error) {
+	raw, ok := getStringParam(params, key)
+	if !ok {
+		return fallback, validateTCPPort(key, fallback)
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, status.Errorf(codes.InvalidArgument, "parameter %s must be an integer between 1 and 65535", key)
+	}
+	if err := validateTCPPort(key, port); err != nil {
+		return 0, err
+	}
+	return port, nil
+}
+
+func validateTargetPortal(value string) error {
+	portal := strings.TrimSpace(value)
+	if portal == "" {
+		return status.Error(codes.InvalidArgument, "parameter targetPortal is required")
+	}
+	if strings.Contains(portal, "://") || strings.ContainsAny(portal, `/\`) {
+		return status.Error(codes.InvalidArgument, "parameter targetPortal must be a host, IP address, or host:port, not a URL or path")
+	}
+	if strings.ContainsFunc(portal, unicode.IsSpace) {
+		return status.Error(codes.InvalidArgument, "parameter targetPortal must not contain whitespace")
+	}
+	if host, portStr, err := net.SplitHostPort(portal); err == nil {
+		if strings.TrimSpace(host) == "" {
+			return status.Error(codes.InvalidArgument, "parameter targetPortal host must not be empty")
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return status.Error(codes.InvalidArgument, "parameter targetPortal port must be an integer between 1 and 65535")
+		}
+		return validateTCPPort("targetPortal port", port)
+	}
+	if strings.Contains(portal, ":") && net.ParseIP(portal) == nil {
+		return status.Error(codes.InvalidArgument, "parameter targetPortal with a port must be formatted as host:port or [ipv6]:port")
+	}
+	return nil
+}
+
+func validateWindowsPathParam(key, value string, required bool) error {
+	path := strings.TrimSpace(value)
+	if path == "" {
+		if required {
+			return status.Errorf(codes.InvalidArgument, "parameter %s is required", key)
+		}
+		return nil
+	}
+	if !isWindowsAbsolutePath(path) {
+		return status.Errorf(codes.InvalidArgument, "parameter %s must be an absolute Windows path or UNC path", key)
+	}
+	normalized := strings.ReplaceAll(path, "/", `\`)
+	normalized = strings.TrimPrefix(normalized, `\\?\`)
+	if strings.Contains(normalized, `\..\`) || strings.HasSuffix(normalized, `\..`) || strings.HasPrefix(normalized, `..\`) {
+		return status.Errorf(codes.InvalidArgument, "parameter %s must not contain '..' path segments", key)
+	}
+	if hasInvalidWindowsPathChar(normalized) {
+		return status.Errorf(codes.InvalidArgument, "parameter %s contains invalid Windows path characters", key)
+	}
+	return nil
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	path = strings.TrimPrefix(path, `\\?\`)
+	if len(path) >= 3 && isASCIIAlpha(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
+		return true
+	}
+	if strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, `//`) {
+		trimmed := strings.TrimLeft(path, `\/`)
+		parts := strings.FieldsFunc(trimmed, func(r rune) bool { return r == '\\' || r == '/' })
+		return len(parts) >= 2 && strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[1]) != ""
+	}
+	return false
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+func hasInvalidWindowsPathChar(path string) bool {
+	for i, r := range path {
+		if unicode.IsControl(r) {
+			return true
+		}
+		switch r {
+		case '<', '>', '"', '|', '?', '*':
+			return true
+		case ':':
+			if i != 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateIQNPrefix(prefix string) error {
+	value := strings.TrimSpace(prefix)
+	if value == "" {
+		return nil
+	}
+	if strings.ContainsFunc(value, unicode.IsSpace) || strings.Contains(value, ":") || !iqnPrefixPattern.MatchString(value) {
+		return status.Error(codes.InvalidArgument, "parameter iqnPrefix must look like iqn.yyyy-mm.reverse.domain and must not contain whitespace or ':'")
+	}
+	return nil
+}
+
+func validateIQNValue(key, value string) error {
+	iqn := strings.TrimSpace(value)
+	if iqn == "" {
+		return status.Errorf(codes.InvalidArgument, "%s must not be empty", key)
+	}
+	prefix, suffix, ok := strings.Cut(iqn, ":")
+	if !ok || strings.TrimSpace(suffix) == "" {
+		return status.Errorf(codes.InvalidArgument, "%s must look like iqn.yyyy-mm.reverse.domain:name", key)
+	}
+	if err := validateIQNPrefix(prefix); err != nil {
+		return status.Errorf(codes.InvalidArgument, "%s must look like iqn.yyyy-mm.reverse.domain:name", key)
+	}
+	if strings.ContainsFunc(suffix, unicode.IsSpace) || strings.ContainsAny(suffix, `/\`) || hasInvalidWindowsPathChar(strings.ReplaceAll(suffix, ":", "")) {
+		return status.Errorf(codes.InvalidArgument, "%s suffix contains unsupported characters", key)
+	}
+	return nil
+}
+
+func validateISCSITargetName(name string) error {
+	value := strings.TrimSpace(name)
+	if value == "" {
+		return status.Error(codes.InvalidArgument, "iSCSI target name must not be empty")
+	}
+	if len(value) > 223 {
+		return status.Error(codes.InvalidArgument, "iSCSI target name must be no more than 223 characters")
+	}
+	if strings.HasPrefix(strings.ToLower(value), "iqn.") {
+		return validateIQNValue("iSCSI target IQN", value)
+	}
+	if strings.ContainsFunc(value, unicode.IsSpace) || hasInvalidWindowsPathChar(value) || strings.ContainsAny(value, `/\`) {
+		return status.Errorf(codes.InvalidArgument, "iSCSI target name %q contains unsupported characters", name)
+	}
+	return nil
+}
+
 func normalizeNfsPermission(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "rw", "readwrite", "read-write":
@@ -292,6 +453,51 @@ func nfsAuthenticationParam(params map[string]string) string {
 		return v
 	}
 	return ""
+}
+
+func normalizeNfsClientType(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "host":
+		return "host", nil
+	case "clientgroup", "client-group":
+		return "clientgroup", nil
+	case "netgroup", "net-group":
+		return "netgroup", nil
+	default:
+		return "", status.Error(codes.InvalidArgument, "parameter nfsClientType must be host, clientgroup, or netgroup")
+	}
+}
+
+func normalizeSmbCachingMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return "", nil
+	case "none":
+		return "None", nil
+	case "manual":
+		return "Manual", nil
+	case "documents":
+		return "Documents", nil
+	case "programs":
+		return "Programs", nil
+	case "branchcache", "branch-cache":
+		return "BranchCache", nil
+	default:
+		return "", status.Error(codes.InvalidArgument, "parameter smbCachingMode must be None, Manual, Documents, Programs, or BranchCache")
+	}
+}
+
+func normalizeSmbFolderEnumerationMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return "", nil
+	case "accessbased", "access-based":
+		return "AccessBased", nil
+	case "unrestricted":
+		return "Unrestricted", nil
+	default:
+		return "", status.Error(codes.InvalidArgument, "parameter smbFolderEnumerationMode must be AccessBased or Unrestricted")
+	}
 }
 
 func (cs *ControllerServer) fileShareBackendFromParams(params map[string]string) (string, error) {
@@ -409,9 +615,9 @@ func nfsOptionsFromParams(params map[string]string) (NfsShareOptions, error) {
 	if mountAuthentication == "" {
 		mountAuthentication = preferredNfsMountAuthentication(authentication)
 	}
-	clientType := strings.TrimSpace(params["nfsClientType"])
-	if clientType == "" {
-		clientType = "host"
+	clientType, err := normalizeNfsClientType(params["nfsClientType"])
+	if err != nil {
+		return NfsShareOptions{}, err
 	}
 	return NfsShareOptions{
 		ClientType:            clientType,
@@ -444,14 +650,22 @@ func smbOptionsFromParams(params map[string]string) (SmbShareOptions, error) {
 	if err != nil {
 		return SmbShareOptions{}, err
 	}
+	cachingMode, err := normalizeSmbCachingMode(params["smbCachingMode"])
+	if err != nil {
+		return SmbShareOptions{}, err
+	}
+	folderEnumerationMode, err := normalizeSmbFolderEnumerationMode(params["smbFolderEnumerationMode"])
+	if err != nil {
+		return SmbShareOptions{}, err
+	}
 	return SmbShareOptions{
 		NoAccess:              splitCSVParam(params["smbNoAccess"]),
 		Description:           strings.TrimSpace(params["smbDescription"]),
 		EncryptData:           encryptData,
 		CompressData:          compressData,
 		ContinuouslyAvailable: continuouslyAvailable,
-		CachingMode:           strings.TrimSpace(params["smbCachingMode"]),
-		FolderEnumerationMode: strings.TrimSpace(params["smbFolderEnumerationMode"]),
+		CachingMode:           cachingMode,
+		FolderEnumerationMode: folderEnumerationMode,
 		ConcurrentUserLimit:   concurrentUserLimit,
 	}, nil
 }
@@ -537,7 +751,87 @@ func withIscsiVolumeContextParams(ctx map[string]string, params map[string]strin
 	return ctx
 }
 
+func validateSecretPrintable(key, value string) error {
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return status.Errorf(codes.InvalidArgument, "%s must not contain control characters", key)
+		}
+	}
+	return nil
+}
+
+func validateChapSecretValue(key, value string) error {
+	if err := validateSecretPrintable(key, value); err != nil {
+		return err
+	}
+	if length := len(value); length < chapSecretMinLength || length > chapSecretMaxLength {
+		return status.Errorf(codes.InvalidArgument, "%s must be between 12 and 16 characters", key)
+	}
+	return nil
+}
+
+func validateChapUsernameValue(key, value string) error {
+	if err := validateSecretPrintable(key, value); err != nil {
+		return err
+	}
+	if len(value) > 223 {
+		return status.Errorf(codes.InvalidArgument, "%s must be no more than 223 characters", key)
+	}
+	if strings.ContainsFunc(value, unicode.IsSpace) {
+		return status.Errorf(codes.InvalidArgument, "%s must not contain whitespace", key)
+	}
+	return nil
+}
+
+func validateChapCredentialPair(secrets map[string]string, userKey, passwordKey string) (user, password string, configured bool, err error) {
+	user = strings.TrimSpace(secrets[userKey])
+	password = strings.TrimSpace(secrets[passwordKey])
+	if user == "" && password == "" {
+		return "", "", false, nil
+	}
+	if user == "" || password == "" {
+		return "", "", false, status.Errorf(codes.InvalidArgument, "%s and %s must both be set", userKey, passwordKey)
+	}
+	if err := validateChapUsernameValue(userKey, user); err != nil {
+		return "", "", false, err
+	}
+	if err := validateChapSecretValue(passwordKey, password); err != nil {
+		return "", "", false, err
+	}
+	return user, password, true, nil
+}
+
+func validateChapSecrets(secrets map[string]string) error {
+	_, _, discoveryConfigured, err := validateChapCredentialPair(secrets, "discovery.sendtargets.auth.username", "discovery.sendtargets.auth.password")
+	if err != nil {
+		return err
+	}
+	_, _, discoveryReverseConfigured, err := validateChapCredentialPair(secrets, "discovery.sendtargets.auth.username_in", "discovery.sendtargets.auth.password_in")
+	if err != nil {
+		return err
+	}
+	if discoveryReverseConfigured && !discoveryConfigured {
+		return status.Error(codes.InvalidArgument, "discovery reverse CHAP requires discovery.sendtargets.auth.username and discovery.sendtargets.auth.password")
+	}
+
+	_, _, sessionConfigured, err := validateChapCredentialPair(secrets, "node.session.auth.username", "node.session.auth.password")
+	if err != nil {
+		return err
+	}
+	_, _, reverseConfigured, err := validateChapCredentialPair(secrets, "node.session.auth.username_in", "node.session.auth.password_in")
+	if err != nil {
+		return err
+	}
+	if reverseConfigured && !sessionConfigured {
+		return status.Error(codes.InvalidArgument, "reverse CHAP requires node.session.auth.username and node.session.auth.password")
+	}
+	return nil
+}
+
 func targetChapOptionsFromSecrets(secrets map[string]string) (TargetChapOptions, error) {
+	if err := validateChapSecrets(secrets); err != nil {
+		return TargetChapOptions{}, err
+	}
 	chapUser := strings.TrimSpace(secrets["node.session.auth.username"])
 	chapSecret := strings.TrimSpace(secrets["node.session.auth.password"])
 	reverseChapUser := strings.TrimSpace(secrets["node.session.auth.username_in"])
@@ -665,16 +959,22 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "parameter targetPortal is required")
 	}
-	portalPortStr, _ := getStringParam(params, "portalPort")
-	portalPort := 3260
-	if portalPortStr != "" {
-		p, err := strconv.Atoi(portalPortStr)
-		if err != nil || p <= 0 {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid portalPort: %q", portalPortStr)
-		}
-		portalPort = p
+	if err := validateTargetPortal(targetPortal); err != nil {
+		return nil, err
+	}
+	portalPort, err := parseTCPPortParam(params, "portalPort", 3260)
+	if err != nil {
+		return nil, err
 	}
 	parentDir, _ := getStringParam(params, "vhdxParentPath")
+	if err := validateWindowsPathParam("vhdxParentPath", parentDir, false); err != nil {
+		return nil, err
+	}
+	if iqnPrefix, ok := getStringParam(params, "iqnPrefix"); ok {
+		if err := validateIQNPrefix(iqnPrefix); err != nil {
+			return nil, err
+		}
+	}
 
 	size, err := requiredBytesFromRange(req.GetCapacityRange(), 1)
 	if err != nil {
@@ -682,6 +982,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 	volName := req.GetName()
 	targetName, requestedTargetIQN := iscsiTargetForVolume(params, volName)
+	if err := validateISCSITargetName(targetName); err != nil {
+		return nil, err
+	}
 	targetPortalWithPort := targetPortalAddress(targetPortal, portalPort)
 
 	// Create from snapshot?
@@ -829,6 +1132,9 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "parameter shareParentPath is required")
 	}
+	if err := validateWindowsPathParam("shareParentPath", parentDir, true); err != nil {
+		return nil, err
+	}
 	shareBackend, err := cs.fileShareBackendFromParams(params)
 	if err != nil {
 		return nil, err
@@ -878,6 +1184,9 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, nfsServer string, size int64, nfsOpts NfsShareOptions) (*csi.CreateVolumeResponse, error) {
 	params := req.GetParameters()
 	vhdxParentDir, _ := getStringParam(params, "vhdxParentPath")
+	if err := validateWindowsPathParam("vhdxParentPath", vhdxParentDir, false); err != nil {
+		return nil, err
+	}
 	sharePath := joinWindowsPath(shareParentDir, name)
 	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, shareParentDir)
 	if err != nil {
@@ -953,6 +1262,9 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "parameter shareParentPath is required")
 	}
+	if err := validateWindowsPathParam("shareParentPath", parentDir, true); err != nil {
+		return nil, err
+	}
 	shareBackend, err := cs.fileShareBackendFromParams(params)
 	if err != nil {
 		return nil, err
@@ -1009,6 +1321,9 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, smbServer string, size int64, smbOpts SmbShareOptions) (*csi.CreateVolumeResponse, error) {
 	params := req.GetParameters()
 	vhdxParentDir, _ := getStringParam(params, "vhdxParentPath")
+	if err := validateWindowsPathParam("vhdxParentPath", vhdxParentDir, false); err != nil {
+		return nil, err
+	}
 	sharePath := joinWindowsPath(shareParentDir, name)
 	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, shareParentDir)
 	if err != nil {

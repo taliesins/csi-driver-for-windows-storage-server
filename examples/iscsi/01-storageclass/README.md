@@ -30,7 +30,7 @@ Windows target CHAP uses `node.session.auth.username`,
 `node.session.auth.password`, and optionally `node.session.auth.username_in` /
 `node.session.auth.password_in` for reverse CHAP. Discovery CHAP keys configure
 Linux open-iscsi discovery only; Windows Server iSCSI target CHAP is configured
-per target.
+per target. CHAP and reverse CHAP secrets must be 12-16 characters.
 
 ## Apply
 
