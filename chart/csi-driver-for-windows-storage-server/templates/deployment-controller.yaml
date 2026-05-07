@@ -1,6 +1,7 @@
 {{- if not .Values.nodeOnly }}
 {{- $root := . -}}
-{{- range $key, $driver := .Values.drivers }}
+{{- $key := "windows-storage" -}}
+{{- $driver := mergeOverwrite (include "csi-driver-for-windows-storage-server.driverDefaults" . | fromYaml) (get (.Values.drivers | default dict) $key | default dict) -}}
 {{- if $driver.enabled }}
 ---
 apiVersion: apps/v1
@@ -121,6 +122,5 @@ spec:
       volumes:
         - name: socket-dir
           emptyDir: {}
-{{- end }}
 {{- end }}
 {{- end }}

@@ -1,6 +1,6 @@
 # iSCSI Examples
 
-These examples use `iscsi.csi.windows.microsoft.com` and
+These examples use `windows-storage.csi.windows.microsoft.com` and
 `StorageClass/iscsi-for-windows-rwo`.
 
 ## Order

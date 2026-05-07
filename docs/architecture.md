@@ -7,7 +7,7 @@ graph TB
     subgraph KubernetesCluster["Kubernetes Cluster"]
         subgraph ControlPlane["Control Plane"]
             APIServer["API Server"]
-            CSIDriver["CSI Driver Object<br/>(iscsi.csi.windows.microsoft.com)"]
+            CSIDriver["CSI Driver Object<br/>(windows-storage.csi.windows.microsoft.com)"]
         end
 
         subgraph ControllerPod["Controller Pod<br/>(deployment-controller.yaml)"]

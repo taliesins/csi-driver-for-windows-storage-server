@@ -616,7 +616,7 @@ func volumeContextForVolumeID(v *VolumeID) map[string]string {
 	}
 }
 
-func (cs *ControllerServer) supportsAccessMode(mode csi.VolumeCapability_AccessMode_Mode) bool {
+func (cs *ControllerServer) supportsAccessModeForProtocol(mode csi.VolumeCapability_AccessMode_Mode, protocol Protocol) bool {
 	switch mode {
 	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
@@ -625,7 +625,10 @@ func (cs *ControllerServer) supportsAccessMode(mode csi.VolumeCapability_AccessM
 	case csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
-		return cs.Driver != nil && (cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB)
+		if protocol != "" {
+			return protocol == ProtocolNFS || protocol == ProtocolSMB
+		}
+		return cs.Driver != nil && (cs.Driver.protocol == "" || cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB)
 	default:
 		return false
 	}
@@ -640,17 +643,17 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
 	}
-	for _, vc := range req.GetVolumeCapabilities() {
-		if !cs.supportsAccessMode(vc.GetAccessMode().GetMode()) {
-			return nil, status.Error(codes.InvalidArgument, "access mode is not supported by this driver")
-		}
-	}
-
 	params := req.GetParameters()
 	protocol, err := cs.protocolFromParams(params)
 	if err != nil {
 		return nil, err
 	}
+	for _, vc := range req.GetVolumeCapabilities() {
+		if !cs.supportsAccessModeForProtocol(vc.GetAccessMode().GetMode(), protocol) {
+			return nil, status.Error(codes.InvalidArgument, "access mode is not supported by this driver")
+		}
+	}
+
 	if protocol == ProtocolNFS {
 		return cs.createNfsVolume(ctx, req)
 	}
@@ -1170,7 +1173,7 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid volume_id: %v", err)
 	}
-	if !cs.supportsAccessMode(req.GetVolumeCapability().GetAccessMode().GetMode()) {
+	if !cs.supportsAccessModeForProtocol(req.GetVolumeCapability().GetAccessMode().GetMode(), decoded.Protocol) {
 		return nil, status.Error(codes.FailedPrecondition, "access mode is not supported by this driver")
 	}
 	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
@@ -1232,11 +1235,12 @@ func (cs *ControllerServer) ValidateVolumeCapabilities(ctx context.Context, req 
 	if req.GetVolumeId() == "" || len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "volume_id and volume_capabilities are required")
 	}
-	if _, _, err := decodeAnyVolumeID(req.GetVolumeId()); err != nil {
+	decoded, _, err := decodeAnyVolumeID(req.GetVolumeId())
+	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "invalid volume_id: %v", err)
 	}
 	for _, vc := range req.GetVolumeCapabilities() {
-		if !cs.supportsAccessMode(vc.GetAccessMode().GetMode()) {
+		if !cs.supportsAccessModeForProtocol(vc.GetAccessMode().GetMode(), decoded.Protocol) {
 			return &csi.ValidateVolumeCapabilitiesResponse{
 				Message: "access mode is not supported by this driver",
 			}, nil
@@ -1256,12 +1260,20 @@ func (cs *ControllerServer) ListVolumes(ctx context.Context, req *csi.ListVolume
 
 func (cs *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	params := req.GetParameters()
+	protocol, err := cs.protocolFromParams(params)
+	if err != nil {
+		return nil, err
+	}
 	key := "vhdxParentPath"
 	required := false
-	if cs.Driver != nil && (cs.Driver.protocol == ProtocolNFS || cs.Driver.protocol == ProtocolSMB) {
+	if protocol == ProtocolNFS || protocol == ProtocolSMB {
 		key = "shareParentPath"
 		required = true
-		if cs.Driver.fileShareBackend == fileShareBackendVHDX {
+		shareBackend, err := cs.fileShareBackendFromParams(params)
+		if err != nil {
+			return nil, err
+		}
+		if shareBackend == fileShareBackendVHDX {
 			key = "vhdxParentPath"
 			required = false
 		}
@@ -1336,7 +1348,7 @@ func (cs *ControllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 }
 
 func (cs *ControllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
-	if cs.Driver != nil && cs.Driver.protocol != ProtocolISCSI && cs.Driver.fileShareBackend != fileShareBackendVHDX {
+	if cs.Driver != nil && cs.Driver.protocol != "" && cs.Driver.protocol != ProtocolISCSI && cs.Driver.fileShareBackend != fileShareBackendVHDX {
 		return nil, status.Error(codes.Unimplemented, "ListSnapshots is only supported for iSCSI and VHDX-backed file-share snapshots")
 	}
 

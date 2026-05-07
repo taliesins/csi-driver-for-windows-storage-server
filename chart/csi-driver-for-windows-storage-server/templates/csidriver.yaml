@@ -1,5 +1,6 @@
 {{- $root := . -}}
-{{- range $key, $driver := .Values.drivers }}
+{{- $key := "windows-storage" -}}
+{{- $driver := mergeOverwrite (include "csi-driver-for-windows-storage-server.driverDefaults" . | fromYaml) (get (.Values.drivers | default dict) $key | default dict) -}}
 {{- if $driver.enabled }}
 ---
 apiVersion: storage.k8s.io/v1
@@ -11,5 +12,4 @@ spec:
   volumeLifecycleModes:
     - Persistent
     - Ephemeral
-{{- end }}
 {{- end }}

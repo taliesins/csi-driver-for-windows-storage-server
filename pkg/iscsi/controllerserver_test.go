@@ -238,13 +238,16 @@ func newTestControllerServerForProtocolAndBackend(t *testing.T, protocol Protoco
 	mockBackend := &mockBackend{}
 	name, err := driverNameForProtocol(protocol)
 	require.NoError(t, err)
-	if protocol == ProtocolNFS && fileShareBackend == fileShareBackendVHDX {
-		name = nfsVHDXDriverName
-	}
-	if protocol == ProtocolSMB && fileShareBackend == fileShareBackendVHDX {
-		name = smbVHDXDriverName
-	}
 	d := newNamedProtocolDriverWithShareBackend(name, protocol, fileShareBackend, "node-001", "unix:///var/run/csi/csi.sock")
+	d.backend = mockBackend
+	cs := NewControllerServer(d)
+	return cs, d, mockBackend
+}
+
+func newTestConsolidatedControllerServer(t *testing.T) (*ControllerServer, *driver, *mockBackend) {
+	t.Helper()
+	mockBackend := &mockBackend{}
+	d := newNamedProtocolDriverWithShareBackend(driverName, "", "", "node-001", "unix:///var/run/csi/csi.sock")
 	d.backend = mockBackend
 	cs := NewControllerServer(d)
 	return cs, d, mockBackend
@@ -663,6 +666,54 @@ func TestCreateVolume_InvalidAccessMode(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "access mode is not supported")
+}
+
+func TestCreateVolume_ConsolidatedDriverRejectsMultiNodeISCSI(t *testing.T) {
+	cs, _, _ := newTestConsolidatedControllerServer(t)
+
+	_, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "test-volume",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER}},
+		},
+		Parameters: map[string]string{
+			"protocol":     "iscsi",
+			"targetPortal": "10.0.0.1:3260",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "access mode is not supported")
+}
+
+func TestCreateVolume_ConsolidatedDriverAcceptsMultiNodeNFS(t *testing.T) {
+	cs, _, mockBackend := newTestConsolidatedControllerServer(t)
+	mockBackend.getNfsShareFn = func(ctx context.Context, name, parentDir string) (bool, VolumeInfo, error) {
+		return true, VolumeInfo{
+			VolumeName:    name,
+			Protocol:      ProtocolNFS,
+			NfsServer:     "win-storage.lab.local",
+			NfsExportPath: "/test-volume",
+			VHDXPath:      "D:\\shares\\test-volume",
+			CapacityBytes: 1073741824,
+		}, nil
+	}
+
+	resp, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "test-volume",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER}},
+		},
+		Parameters: map[string]string{
+			"protocol":        "nfs",
+			"shareBackend":    fileShareBackendDirectory,
+			"shareParentPath": "D:\\shares",
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "nfs", resp.Volume.VolumeContext["protocol"])
 }
 
 func TestCreateVolume_ProtocolMismatch(t *testing.T) {

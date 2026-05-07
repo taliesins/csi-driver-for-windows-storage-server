@@ -1,5 +1,6 @@
 {{- $root := . -}}
-{{- range $key, $driver := .Values.drivers }}
+{{- $key := "windows-storage" -}}
+{{- $driver := mergeOverwrite (include "csi-driver-for-windows-storage-server.driverDefaults" . | fromYaml) (get (.Values.drivers | default dict) $key | default dict) -}}
 {{- if $driver.enabled }}
 ---
 apiVersion: apps/v1
@@ -70,19 +71,15 @@ spec:
             - --endpoint=$(CSI_ENDPOINT)
             {{- if $driver.needsIscsi }}
             - --nodeid-file=/host{{ $root.Values.node.initiatorNamePath }}
-            {{- else }}
-            - --nodeid=$(NODE_ID)
             {{- end }}
             - --mode=node
             - --drivername={{ $driver.name }}
             - --v={{ $root.Values.sidecars.logLevel }}
           env:
-            {{- if not $driver.needsIscsi }}
-            - name: NODE_ID
+            - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            {{- end }}
             - name: CSI_ENDPOINT
               value: "unix:///csi/csi.sock"
             - name: CSI_DRIVER_RUN_DIR
@@ -140,8 +137,6 @@ spec:
             path: /var/run/{{ $driver.name }}
             type: DirectoryOrCreate
 {{- end }}
-{{- end }}
-{{- range $key, $driver := .Values.drivers }}
 {{- if and $driver.enabled $driver.needsIscsi }}
 ---
 apiVersion: v1
@@ -166,5 +161,4 @@ data:
     else
       chroot /host iscsiadm "$@"
     fi
-{{- end }}
 {{- end }}

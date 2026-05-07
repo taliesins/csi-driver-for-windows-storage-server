@@ -2,11 +2,12 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: iscsi-for-windows-rwo
-provisioner: iscsi.csi.windows.microsoft.com
+provisioner: windows-storage.csi.windows.microsoft.com
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
+  protocol: "iscsi"
   targetPortal: "win-storage.lab.local"
   # Optional: portalPort defaults to 3260.
   # portalPort: "3260"

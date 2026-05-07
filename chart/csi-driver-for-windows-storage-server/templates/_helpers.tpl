@@ -27,14 +27,22 @@ Create the name of the node resources
 Create the name of a controller Deployment for one CSI driver.
 */}}
 {{- define "csi-driver-for-windows-storage-server.driverControllerName" -}}
+{{- if eq .key "windows-storage" -}}
+{{- include "csi-driver-for-windows-storage-server.controllerName" .root -}}
+{{- else -}}
 {{- printf "%s-%s-controller" ((include "csi-driver-for-windows-storage-server.fullname" .root) | trunc 44 | trimSuffix "-") .key | trunc 63 | trimSuffix "-" }}
+{{- end -}}
 {{- end }}
 
 {{/*
 Create the name of a node DaemonSet for one CSI driver.
 */}}
 {{- define "csi-driver-for-windows-storage-server.driverNodeName" -}}
+{{- if eq .key "windows-storage" -}}
+{{- include "csi-driver-for-windows-storage-server.nodeName" .root -}}
+{{- else -}}
 {{- printf "%s-%s-node" ((include "csi-driver-for-windows-storage-server.fullname" .root) | trunc 50 | trimSuffix "-") .key | trunc 63 | trimSuffix "-" }}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -44,6 +52,17 @@ Labels/selectors scoped to one rendered CSI driver instance.
 {{ include "csi-driver-for-windows-storage-server.selectorLabels" .root }}
 app.kubernetes.io/csi-driver: {{ .key | quote }}
 app.kubernetes.io/component: {{ .component | quote }}
+{{- end }}
+
+{{/*
+Default settings for the consolidated CSI driver entry.
+*/}}
+{{- define "csi-driver-for-windows-storage-server.driverDefaults" -}}
+enabled: true
+name: windows-storage.csi.windows.microsoft.com
+attachRequired: true
+needsIscsi: true
+livenessPort: 29753
 {{- end }}
 
 {{/*

@@ -2,6 +2,6 @@ apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: iscsi-for-windows-snapclass
-driver: iscsi.csi.windows.microsoft.com
+driver: windows-storage.csi.windows.microsoft.com
 deletionPolicy: Delete
 parameters: {}
