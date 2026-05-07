@@ -1,6 +1,7 @@
 package iscsi
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	iscsilib "github.com/taliesins/csi-driver-for-windows-storage-server/pkg/iscsilib"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	mount "k8s.io/mount-utils"
@@ -110,6 +110,9 @@ func iscsiConnectionFromContexts(volumeID string, contexts ...map[string]string)
 		err = status.Error(codes.InvalidArgument, "targetPortal is required in publishContext, volumeContext, or volumeId")
 		return
 	}
+	if err = validateTargetPortal(portal); err != nil {
+		return
+	}
 	iqn = firstContextValueForKeys([]string{"iqn", "targetIQN", "targetIqn"}, contexts...)
 	if iqn == "" {
 		err = status.Error(codes.InvalidArgument, "iqn is required in publishContext, volumeContext, or volumeId")
@@ -123,6 +126,10 @@ func iscsiConnectionFromContexts(volumeID string, contexts ...map[string]string)
 	li, conv := strconv.Atoi(lunStr)
 	if conv != nil {
 		err = status.Errorf(codes.InvalidArgument, "invalid lun: %q", lunStr)
+		return
+	}
+	if li < 0 {
+		err = status.Errorf(codes.InvalidArgument, "lun must be non-negative, got %q", lunStr)
 		return
 	}
 	lun = li
@@ -174,9 +181,12 @@ func stageConnectorFile(staging string) string {
 }
 
 // ---------- CHAP secrets parsing (matches iscsiadm keys) ----------
-func parseChapSecrets(secrets map[string]string) (disc iscsilib.Secrets, sess iscsilib.Secrets, doChapDisc bool, authType string) {
+func parseChapSecrets(secrets map[string]string) (disc iscsilib.Secrets, sess iscsilib.Secrets, doChapDisc bool, authType string, err error) {
+	if err = validateChapSecrets(secrets); err != nil {
+		return
+	}
 	// Discovery CHAP
-	if u, ok := secrets["discovery.sendtargets.auth.username"]; ok && u != "" {
+	if u := strings.TrimSpace(secrets["discovery.sendtargets.auth.username"]); u != "" {
 		disc.SecretsType = "chap"
 		disc.UserName = u
 		disc.Password = strings.TrimSpace(secrets["discovery.sendtargets.auth.password"])
@@ -186,7 +196,7 @@ func parseChapSecrets(secrets map[string]string) (disc iscsilib.Secrets, sess is
 	}
 
 	// Session CHAP
-	if u, ok := secrets["node.session.auth.username"]; ok && u != "" {
+	if u := strings.TrimSpace(secrets["node.session.auth.username"]); u != "" {
 		sess.SecretsType = "chap"
 		sess.UserName = u
 		sess.Password = strings.TrimSpace(secrets["node.session.auth.password"])
@@ -230,7 +240,7 @@ func (ns *nodeServer) parseStage(req *csi.NodeStageVolumeRequest) (portal, iqn s
 		fsType = "ext4"
 	}
 
-	discSec, sessSec, chapDisc, authType = parseChapSecrets(req.GetSecrets())
+	discSec, sessSec, chapDisc, authType, err = parseChapSecrets(req.GetSecrets())
 	return
 }
 

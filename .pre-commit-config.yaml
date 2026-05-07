@@ -30,6 +30,14 @@ repos:
     hooks:
       - id: yamllint
 
+  - repo: https://github.com/norwoodj/helm-docs
+    rev: v1.14.2
+    hooks:
+      - id: helm-docs-built
+        args:
+          - --chart-search-root=chart/csi-driver-for-windows-storage-server
+          - --sort-values-order=file
+
   - repo: https://github.com/jumanjihouse/pre-commit-hooks
     rev: 3.0.0
     hooks:

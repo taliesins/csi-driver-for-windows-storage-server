@@ -466,6 +466,67 @@ func TestCreateVolume_TargetPortalRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "targetPortal is required")
 }
 
+func TestCreateVolume_InvalidISCSIParameters(t *testing.T) {
+	tests := []struct {
+		name       string
+		volumeName string
+		params     map[string]string
+		wantErr    string
+	}{
+		{
+			name:       "target portal is URL",
+			volumeName: "test-volume",
+			params:     map[string]string{"targetPortal": "https://storage.example.test:5986/wsman"},
+			wantErr:    "targetPortal must be a host",
+		},
+		{
+			name:       "portal port too large",
+			volumeName: "test-volume",
+			params:     map[string]string{"targetPortal": "storage.example.test", "portalPort": "70000"},
+			wantErr:    "portalPort must be between 1 and 65535",
+		},
+		{
+			name:       "portal port conflicts with target portal port",
+			volumeName: "test-volume",
+			params:     map[string]string{"targetPortal": "storage.example.test:3260", "portalPort": "3261"},
+			wantErr:    "portalPort 3261 conflicts with targetPortal port 3260",
+		},
+		{
+			name:       "relative vhdx path",
+			volumeName: "test-volume",
+			params:     map[string]string{"targetPortal": "storage.example.test", "vhdxParentPath": "relative\\path"},
+			wantErr:    "vhdxParentPath must be an absolute Windows path",
+		},
+		{
+			name:       "bad iqn prefix",
+			volumeName: "test-volume",
+			params:     map[string]string{"targetPortal": "storage.example.test", "iqnPrefix": "iqn.2024-01.com example"},
+			wantErr:    "iqnPrefix",
+		},
+		{
+			name:       "bad target name",
+			volumeName: "bad/name",
+			params:     map[string]string{"targetPortal": "storage.example.test"},
+			wantErr:    "iSCSI target name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cs, _, _ := newTestControllerServer(t)
+			_, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+				Name: tt.volumeName,
+				VolumeCapabilities: []*csi.VolumeCapability{
+					{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}},
+				},
+				Parameters: tt.params,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestTargetChapOptionsFromSecrets(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		opts, err := targetChapOptionsFromSecrets(nil)
@@ -476,32 +537,32 @@ func TestTargetChapOptionsFromSecrets(t *testing.T) {
 	t.Run("session chap", func(t *testing.T) {
 		opts, err := targetChapOptionsFromSecrets(map[string]string{
 			"node.session.auth.username": " dbnode01 ",
-			"node.session.auth.password": " S3cret! ",
+			"node.session.auth.password": " S3cretPass123 ",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cret!"}, opts)
+		assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cretPass123"}, opts)
 	})
 
 	t.Run("mutual chap", func(t *testing.T) {
 		opts, err := targetChapOptionsFromSecrets(map[string]string{
 			"node.session.auth.username":    "dbnode01",
-			"node.session.auth.password":    "S3cret!",
+			"node.session.auth.password":    "S3cretPass123",
 			"node.session.auth.username_in": "targetid",
-			"node.session.auth.password_in": "TargetS3cret!",
+			"node.session.auth.password_in": "TargetPass123",
 		})
 		require.NoError(t, err)
 		assert.Equal(t, TargetChapOptions{
 			ChapUser:          "dbnode01",
-			ChapSecret:        "S3cret!",
+			ChapSecret:        "S3cretPass123",
 			ReverseChapUser:   "targetid",
-			ReverseChapSecret: "TargetS3cret!",
+			ReverseChapSecret: "TargetPass123",
 		}, opts)
 	})
 
 	t.Run("discovery chap is linux only", func(t *testing.T) {
 		opts, err := targetChapOptionsFromSecrets(map[string]string{
 			"discovery.sendtargets.auth.username": "discuser",
-			"discovery.sendtargets.auth.password": "DiscS3cret!",
+			"discovery.sendtargets.auth.password": "DiscPass1234",
 		})
 		require.NoError(t, err)
 		assert.False(t, opts.Enabled())
@@ -518,10 +579,28 @@ func TestTargetChapOptionsFromSecrets(t *testing.T) {
 	t.Run("reverse requires session chap", func(t *testing.T) {
 		_, err := targetChapOptionsFromSecrets(map[string]string{
 			"node.session.auth.username_in": "targetid",
-			"node.session.auth.password_in": "TargetS3cret!",
+			"node.session.auth.password_in": "TargetPass123",
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "reverse CHAP requires")
+	})
+
+	t.Run("short chap secret", func(t *testing.T) {
+		_, err := targetChapOptionsFromSecrets(map[string]string{
+			"node.session.auth.username": "dbnode01",
+			"node.session.auth.password": "short",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "between 12 and 16")
+	})
+
+	t.Run("invalid username", func(t *testing.T) {
+		_, err := targetChapOptionsFromSecrets(map[string]string{
+			"node.session.auth.username": "db node",
+			"node.session.auth.password": "S3cretPass123",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must not contain whitespace")
 	})
 }
 
@@ -633,9 +712,9 @@ func TestCreateVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 		},
 		Secrets: map[string]string{
 			"node.session.auth.username":    "dbnode01",
-			"node.session.auth.password":    "S3cret!",
+			"node.session.auth.password":    "S3cretPass123",
 			"node.session.auth.username_in": "targetid",
-			"node.session.auth.password_in": "TargetS3cret!",
+			"node.session.auth.password_in": "TargetPass123",
 		},
 	})
 
@@ -645,9 +724,9 @@ func TestCreateVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 	assert.Equal(t, "test-volume", gotTargetName)
 	assert.Equal(t, TargetChapOptions{
 		ChapUser:          "dbnode01",
-		ChapSecret:        "S3cret!",
+		ChapSecret:        "S3cretPass123",
 		ReverseChapUser:   "targetid",
-		ReverseChapSecret: "TargetS3cret!",
+		ReverseChapSecret: "TargetPass123",
 	}, gotChap)
 }
 
@@ -805,7 +884,7 @@ func TestCreateVolume_Idempotent_ExistingVolume(t *testing.T) {
 		},
 		Secrets: map[string]string{
 			"node.session.auth.username": "dbnode01",
-			"node.session.auth.password": "S3cret!",
+			"node.session.auth.password": "S3cretPass123",
 		},
 	})
 
@@ -978,6 +1057,79 @@ func TestCreateVolume_SMB(t *testing.T) {
 	decoded, err := DecodeVolumeID(resp.Volume.VolumeId)
 	require.NoError(t, err)
 	assert.Equal(t, ProtocolSMB, decoded.Protocol)
+}
+
+func TestCreateVolume_InvalidFileShareParameters(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol Protocol
+		params   map[string]string
+		wantErr  string
+	}{
+		{
+			name:     "relative share path",
+			protocol: ProtocolNFS,
+			params: map[string]string{
+				"protocol":        "nfs",
+				"shareParentPath": "shares",
+			},
+			wantErr: "shareParentPath must be an absolute Windows path",
+		},
+		{
+			name:     "parent path traversal",
+			protocol: ProtocolNFS,
+			params: map[string]string{
+				"protocol":        "nfs",
+				"shareParentPath": "D:\\shares\\..\\other",
+			},
+			wantErr: "must not contain '..'",
+		},
+		{
+			name:     "invalid nfs client type",
+			protocol: ProtocolNFS,
+			params: map[string]string{
+				"protocol":        "nfs",
+				"shareParentPath": "D:\\shares",
+				"nfsClientType":   "group",
+			},
+			wantErr: "nfsClientType",
+		},
+		{
+			name:     "invalid smb caching mode",
+			protocol: ProtocolSMB,
+			params: map[string]string{
+				"protocol":        "smb",
+				"shareParentPath": "D:\\shares",
+				"smbCachingMode":  "aggressive",
+			},
+			wantErr: "smbCachingMode",
+		},
+		{
+			name:     "invalid smb folder enumeration mode",
+			protocol: ProtocolSMB,
+			params: map[string]string{
+				"protocol":                 "smb",
+				"shareParentPath":          "D:\\shares",
+				"smbFolderEnumerationMode": "hidden",
+			},
+			wantErr: "smbFolderEnumerationMode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cs, _, _ := newTestControllerServerForProtocol(t, tt.protocol)
+			_, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+				Name: "share-vol",
+				VolumeCapabilities: []*csi.VolumeCapability{
+					{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER}},
+				},
+				Parameters: tt.params,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestCreateVolume_NFSOptionsAndSnapshotRestore(t *testing.T) {
@@ -1508,7 +1660,7 @@ func TestControllerPublishVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 		},
 		Secrets: map[string]string{
 			"node.session.auth.username": "dbnode01",
-			"node.session.auth.password": "S3cret!",
+			"node.session.auth.password": "S3cretPass123",
 		},
 	})
 
@@ -1516,7 +1668,7 @@ func TestControllerPublishVolume_ConfiguresWindowsTargetChap(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, 1, configureTargetChapCalls)
 	assert.Equal(t, "iqn.2024-01.com.example:test-volume", gotTargetName)
-	assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cret!"}, gotChap)
+	assert.Equal(t, TargetChapOptions{ChapUser: "dbnode01", ChapSecret: "S3cretPass123"}, gotChap)
 }
 
 func TestControllerPublishVolume_UsesTargetNameWhenPresent(t *testing.T) {
@@ -1722,6 +1874,62 @@ func TestGetCapacity_FileShareDriverUsesShareParentPath(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), resp.AvailableCapacity)
+}
+
+func TestGetCapacity_ValidatesParentPaths(t *testing.T) {
+	tests := []struct {
+		name             string
+		protocol         Protocol
+		fileShareBackend string
+		params           map[string]string
+		wantErr          string
+	}{
+		{
+			name:    "rejects invalid vhdx parent path",
+			params:  map[string]string{"vhdxParentPath": "relative\\path"},
+			wantErr: "vhdxParentPath must be an absolute Windows path",
+		},
+		{
+			name:     "rejects missing share parent path",
+			protocol: ProtocolNFS,
+			params:   map[string]string{},
+			wantErr:  "shareParentPath is required",
+		},
+		{
+			name:     "rejects traversal in share parent path",
+			protocol: ProtocolNFS,
+			params:   map[string]string{"shareParentPath": "D:\\shares\\..\\escape"},
+			wantErr:  "shareParentPath must not contain '..' path segments",
+		},
+		{
+			name:             "rejects invalid vhdx parent path for vhdx-backed shares",
+			protocol:         ProtocolNFS,
+			fileShareBackend: fileShareBackendVHDX,
+			params:           map[string]string{"shareParentPath": "D:\\shares", "vhdxParentPath": "relative\\path"},
+			wantErr:          "vhdxParentPath must be an absolute Windows path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol := tt.protocol
+			if protocol == "" {
+				protocol = ProtocolISCSI
+			}
+			cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, protocol, tt.fileShareBackend)
+			mockBackend.getDirectoryFreeCapFn = func(ctx context.Context, parentDir string) (int64, error) {
+				t.Fatalf("GetDirectoryFreeCapacity should not be called with invalid params; parentDir: %s", parentDir)
+				return 0, nil
+			}
+
+			_, err := cs.GetCapacity(context.Background(), &csi.GetCapacityRequest{
+				Parameters: tt.params,
+			})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -152,6 +152,78 @@ func TestNodeStageVolume_IscsiConnectionRequired(t *testing.T) {
 	assert.Contains(t, err.Error(), "targetPortal is required")
 }
 
+func TestNodeStageVolume_InvalidIscsiInputs(t *testing.T) {
+	tests := []struct {
+		name           string
+		publishContext map[string]string
+		secrets        map[string]string
+		wantErr        string
+	}{
+		{
+			name: "target portal is URL",
+			publishContext: map[string]string{
+				"targetPortal": "https://storage.example.test/wsman",
+				"iqn":          "iqn.2024-01.com.example:test-volume",
+				"lun":          "0",
+			},
+			wantErr: "targetPortal must be a host",
+		},
+		{
+			name: "negative lun",
+			publishContext: map[string]string{
+				"targetPortal": "10.0.0.1:3260",
+				"iqn":          "iqn.2024-01.com.example:test-volume",
+				"lun":          "-1",
+			},
+			wantErr: "lun must be non-negative",
+		},
+		{
+			name: "short chap secret",
+			publishContext: map[string]string{
+				"targetPortal": "10.0.0.1:3260",
+				"iqn":          "iqn.2024-01.com.example:test-volume",
+				"lun":          "0",
+			},
+			secrets: map[string]string{
+				"node.session.auth.username": "session-user",
+				"node.session.auth.password": "short",
+			},
+			wantErr: "between 12 and 16",
+		},
+		{
+			name: "discovery reverse requires discovery chap",
+			publishContext: map[string]string{
+				"targetPortal": "10.0.0.1:3260",
+				"iqn":          "iqn.2024-01.com.example:test-volume",
+				"lun":          "0",
+			},
+			secrets: map[string]string{
+				"discovery.sendtargets.auth.username_in": "disc-user-in",
+				"discovery.sendtargets.auth.password_in": "disc-pass-in",
+			},
+			wantErr: "discovery reverse CHAP requires",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ns, _, _ := newTestNodeServer(t)
+			_, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "test-vol",
+				StagingTargetPath: "/staging",
+				VolumeCapability: &csi.VolumeCapability{
+					AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+					AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+				},
+				PublishContext: tt.publishContext,
+				Secrets:        tt.secrets,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestNodeStageVolume_BlockVolume(t *testing.T) {
 	ns, _, mockMount := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
@@ -183,7 +255,7 @@ func TestNodeStageVolume_BlockVolume(t *testing.T) {
 		},
 		Secrets: map[string]string{
 			"discovery.sendtargets.auth.username":    "disc-user",
-			"discovery.sendtargets.auth.password":    "disc-pass",
+			"discovery.sendtargets.auth.password":    "DiscPass1234",
 			"discovery.sendtargets.auth.username_in": "disc-user-in",
 			"discovery.sendtargets.auth.password_in": "disc-pass-in",
 			"node.session.auth.username":             "session-user",
@@ -205,7 +277,7 @@ func TestNodeStageVolume_BlockVolume(t *testing.T) {
 	assert.Equal(t, iscsilib.Secrets{
 		SecretsType: "chap",
 		UserName:    "disc-user",
-		Password:    "disc-pass",
+		Password:    "DiscPass1234",
 		UserNameIn:  "disc-user-in",
 		PasswordIn:  "disc-pass-in",
 	}, gotConnector.DiscoverySecrets)

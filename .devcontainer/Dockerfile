@@ -93,6 +93,10 @@ RUN curl -sSL https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz -o he
     && chmod +x /usr/bin/helm \
     && rm -rf helm.tgz linux-amd64
 
+# Get helm-docs
+ARG HELM_DOCS_VERSION=v1.14.2
+RUN GOBIN=/usr/local/bin go install github.com/norwoodj/helm-docs/cmd/helm-docs@${HELM_DOCS_VERSION}
+
 # Get shfmt
 ARG SHFMT_VERSION=3.11.0
 RUN curl -sSL https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64 -o /usr/bin/shfmt \
@@ -140,26 +144,27 @@ RUN curl -sSL https://github.com/goreleaser/goreleaser/releases/download/${GOREL
 # Create and set permissions for various tooling directories
 ARG CONTAINER_USER=vscode
 ARG CONTAINER_GROUP=vscode
+ARG CONTAINER_GID=1000
 USER root
-# When sharing files between devcontainers we need to have the same guid between them. The default GID is 1000 for vscode.
+# When sharing files between devcontainers we need to have the same GID between them. The default GID is 1000 for vscode.
 RUN set -eux; \
-    # Ensure group exists for the GID
+    # Ensure group exists
     if ! getent group "${CONTAINER_GROUP}" >/dev/null; then \
-    groupadd --gid "${CONTAINER_GROUP}" shared-group; \
+    groupadd --gid "${CONTAINER_GID}" "${CONTAINER_GROUP}"; \
     fi; \
-    # Resolve group name from GID
+    # Resolve group name
     GROUP_NAME="$(getent group "${CONTAINER_GROUP}" | cut -d: -f1)"; \
     # Only add user to group if not already a member
     if ! id -nG "${CONTAINER_USER}" | grep -qw "${GROUP_NAME}"; then \
     usermod -aG "${GROUP_NAME}" "${CONTAINER_USER}"; \
     fi
-    
+
 RUN groupadd -g 1001 docker \
     && usermod -aG docker root \
     && usermod -aG docker ${CONTAINER_USER}
 
-RUN mkdir -p /home/${CONTAINER_USER}/.kube /home/${CONTAINER_USER}/.ssh /workspace \
-    && chown -R ${CONTAINER_USER}:${CONTAINER_GROUP} /home/${CONTAINER_USER} /workspace \
+RUN mkdir -p /home/${CONTAINER_USER}/.cache/go-build /home/${CONTAINER_USER}/.kube /home/${CONTAINER_USER}/.ssh /go/bin /go/pkg/mod /workspace \
+    && chown -R ${CONTAINER_USER}:${CONTAINER_GROUP} /home/${CONTAINER_USER} /go /workspace \
     && SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/home/${CONTAINER_USER}/.bash_history" \
     && echo "$SNIPPET" >> "/home/${CONTAINER_USER}/.bashrc" \
     && chmod 700 /home/${CONTAINER_USER}/.ssh \

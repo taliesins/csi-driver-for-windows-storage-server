@@ -398,17 +398,18 @@ func getenvDefault(k, def string) string {
 	return def
 }
 
-func parseBoolDefault(s string, def bool) bool {
-	if s == "" {
-		return def
+func parseBoolEnv(name string, def bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def, nil
 	}
-	switch strings.ToLower(s) {
+	switch strings.ToLower(raw) {
 	case "1", "true", "yes", "y", "on":
-		return true
+		return true, nil
 	case "0", "false", "no", "n", "off":
-		return false
+		return false, nil
 	default:
-		return def
+		return false, fmt.Errorf("%s must be a boolean", name)
 	}
 }
 
@@ -417,25 +418,32 @@ func newWinRMBackendFromEnv() (Backend, error) {
 	if host == "" {
 		return nil, fmt.Errorf("WINRM_HOST is required")
 	}
+	useTLS, err := parseBoolEnv("WINRM_TLS", false)
+	if err != nil {
+		return nil, err
+	}
+	insecure, err := parseBoolEnv("WINRM_INSECURE", true)
+	if err != nil {
+		return nil, err
+	}
+
 	portStr := getenvDefault("WINRM_PORT", "")
 	var port int
 	if portStr == "" {
 		// default port depends on TLS
-		if parseBoolDefault(os.Getenv("WINRM_TLS"), false) {
+		if useTLS {
 			port = 5986
 		} else {
 			port = 5985
 		}
 	} else {
 		p, err := strconv.Atoi(portStr)
-		if err != nil || p <= 0 {
+		if err != nil || p <= 0 || p > maxTCPPort {
 			return nil, fmt.Errorf("invalid WINRM_PORT: %q", portStr)
 		}
 		port = p
 	}
 
-	useTLS := parseBoolDefault(os.Getenv("WINRM_TLS"), false)
-	insecure := parseBoolDefault(os.Getenv("WINRM_INSECURE"), true) // allow self-signed by default
 	user := getenvDefault("WINRM_USER", "")
 	pass := os.Getenv("WINRM_PASSWORD")
 	if user == "" || pass == "" {
@@ -444,12 +452,20 @@ func newWinRMBackendFromEnv() (Backend, error) {
 
 	timeout := 60 * time.Second
 	if t := strings.TrimSpace(os.Getenv("WINRM_TIMEOUT")); t != "" {
-		if dur, err := time.ParseDuration(t); err == nil {
-			timeout = dur
+		dur, err := time.ParseDuration(t)
+		if err != nil || dur <= 0 {
+			return nil, fmt.Errorf("invalid WINRM_TIMEOUT: %q", t)
 		}
+		timeout = dur
 	}
 	b := NewWinRMBackend(host, port, useTLS, insecure, user, pass, timeout)
-	b.Auth = getenvDefault("WINRM_AUTH", "basic")
+	auth := normalizeWinRMAuth(getenvDefault("WINRM_AUTH", "basic"))
+	switch auth {
+	case "basic", "ntlm":
+	default:
+		return nil, fmt.Errorf("unsupported WINRM_AUTH %q; supported values are basic and ntlm", os.Getenv("WINRM_AUTH"))
+	}
+	b.Auth = auth
 
 	if imp := strings.TrimSpace(os.Getenv("WINRM_PS_IMPORT")); imp != "" {
 		b.PSModuleImport = imp
