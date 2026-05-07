@@ -616,10 +616,6 @@ func volumeContextForVolumeID(v *VolumeID) map[string]string {
 	}
 }
 
-func (cs *ControllerServer) supportsAccessMode(mode csi.VolumeCapability_AccessMode_Mode) bool {
-	return cs.supportsAccessModeForProtocol(mode, "")
-}
-
 func (cs *ControllerServer) supportsAccessModeForProtocol(mode csi.VolumeCapability_AccessMode_Mode, protocol Protocol) bool {
 	switch mode {
 	case csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,

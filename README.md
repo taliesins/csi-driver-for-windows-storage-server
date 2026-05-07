@@ -8,6 +8,12 @@ This repository provides a consolidated CSI driver for dynamic provisioning of W
 
 All modes use the CSI plugin name `windows-storage.csi.windows.microsoft.com`. StorageClasses select the backend with the `protocol` parameter and, for NFS/SMB, the optional `shareBackend` parameter.
 
+#### Driver Name Migration
+
+The consolidated deployment registers only `windows-storage.csi.windows.microsoft.com`. Update StorageClasses and VolumeSnapshotClasses that still reference `iscsi.csi.windows.microsoft.com`, `nfs.csi.windows.microsoft.com`, `smb.csi.windows.microsoft.com`, `nfs-vhdx.csi.windows.microsoft.com`, or `smb-vhdx.csi.windows.microsoft.com` to the consolidated driver name and move protocol selection into parameters such as `protocol: iscsi`, `protocol: nfs`, `protocol: smb`, and `shareBackend: vhdx` where needed.
+
+Existing PV objects that reference a legacy `spec.csi.driver` need to be recreated with the same `volumeHandle` and the consolidated driver name. To preserve storage, set the PV reclaim policy to `Retain`, stop workloads, delete/recreate the PV manifest with `spec.csi.driver: windows-storage.csi.windows.microsoft.com`, then recreate or rebind the PVC.
+
 | Mode | Storage Class | Parameters | Access Mode | Backing Store |
 |--------|-----------------|---------------|-------------|---------------|
 | iSCSI | `iscsi-for-windows-rwo` | `protocol: iscsi` | RWO | VHDX + iSCSI target |
@@ -406,11 +412,13 @@ The chart is published as an OCI artifact to GHCR at `oci://ghcr.io/taliesins/he
 
 WinRM connection details are required for the controller. Set `winrm.host` to the Windows storage server DNS name or IP address reachable from the Kubernetes cluster, and set `winrm.user` / `winrm.password` to the account configured by the Windows bootstrap script.
 
-By default, the chart deploys controller, node, and CSIDriver objects for all
-five drivers: iSCSI, NFS, NFS VHDX, SMB, and SMB VHDX. Disable individual
-drivers with `drivers.<name>.enabled=false` when you only need a subset.
-For static, pre-provisioned volumes, set `nodeOnly=true` to skip all controller
-and WinRM setup and install only the Linux node side.
+By default, the chart deploys one consolidated driver entry,
+`drivers.windows-storage`. Set `drivers.windows-storage.enabled=false` only when
+you need to render dependent resources without the driver itself.
+Protocol-specific flags such as `drivers.nfs`, `drivers.smb`, and
+`drivers.iscsi` were removed from `values.yaml`; choose the storage protocol in
+StorageClass parameters. For static, pre-provisioned volumes, set `nodeOnly=true`
+to skip all controller and WinRM setup and install only the Linux node side.
 
 ```sh
 helm upgrade --install --create-namespace csi-driver-for-windows-storage-server oci://ghcr.io/taliesins/helm/csi-driver-for-windows-storage-server -n=kube-system \
@@ -465,10 +473,13 @@ controller:
 
 Only the elected controller serves controller RPCs and renews the lease. Node pods do not use leader election.
 
-For iSCSI node identity, the chart defaults to reading
-`/etc/iscsi/initiatorname.iscsi` from each Kubernetes node. Override
+By default, the chart enables iSCSI node support. The node plugin reads
+`/etc/iscsi/initiatorname.iscsi` from each Kubernetes node and reports the
+initiator IQN required by dynamic iSCSI `ControllerPublishVolume`. Override
 `node.initiatorNamePath` only if your node image stores the open-iscsi initiator
-name somewhere else.
+name somewhere else. For NFS/SMB-only installs, set
+`drivers.windows-storage.needsIscsi=false` to skip the iSCSI host mounts and use
+the Kubernetes node name as the CSI node ID.
 
 When using `winrm.existingSecret`, create the WinRM credentials secret before installing:
 

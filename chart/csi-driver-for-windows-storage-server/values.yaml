@@ -27,6 +27,9 @@ drivers:
     enabled: true
     name: windows-storage.csi.windows.microsoft.com
     attachRequired: true
+    # Enabled by default so the node plugin installs the host iSCSI plumbing and
+    # reads the open-iscsi initiator name from node.initiatorNamePath. Set false
+    # for NFS/SMB-only installs to use the Kubernetes node name instead.
     needsIscsi: true
     livenessPort: 29753
 

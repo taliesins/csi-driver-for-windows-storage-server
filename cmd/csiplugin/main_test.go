@@ -14,13 +14,21 @@ func TestResolveNodeID(t *testing.T) {
 	path := filepath.Join(dir, "initiatorname.iscsi")
 	require.NoError(t, os.WriteFile(path, []byte("InitiatorName=iqn.1993-08.org.debian:01:node-a\n"), 0o600))
 
-	got, err := resolveNodeID(" explicit-node ", path)
+	got, err := resolveNodeID(" explicit-node ", path, "")
 	require.NoError(t, err)
 	assert.Equal(t, "explicit-node", got)
 
-	got, err = resolveNodeID("", path)
+	got, err = resolveNodeID("", path, "")
 	require.NoError(t, err)
 	assert.Equal(t, "iqn.1993-08.org.debian:01:node-a", got)
+
+	got, err = resolveNodeID("", filepath.Join(dir, "missing"), "kube-node-a")
+	require.NoError(t, err)
+	assert.Equal(t, "kube-node-a", got)
+
+	got, err = resolveNodeID("", "", "kube-node-b")
+	require.NoError(t, err)
+	assert.Equal(t, "kube-node-b", got)
 }
 
 func TestParseNodeIDContent(t *testing.T) {

@@ -1,4 +1,4 @@
-# Install ISCSI CSI driver master version on a kubernetes cluster
+# Install Windows Storage CSI driver master version on a kubernetes cluster
 
 ## Install with Helm (OCI / GHCR)
 
@@ -150,7 +150,7 @@ csi-windows-storage-node-cvgbs                        3/3     Running   0       
 csi-windows-storage-node-dr4s4                        3/3     Running   0          35s     10.240.0.4     k8s-agentpool-22533604-0
 ```
 
-- clean up ISCSI CSI driver
+- Clean up CSI driver
 
 ```console
 curl -skSL https://raw.githubusercontent.com/taliesins/csi-driver-for-windows-storage-server/master/deploy/uninstall-driver.sh | bash -s master --

@@ -1,4 +1,4 @@
-# ISCSI CSI driver development guide
+# Windows Storage CSI driver development guide
 
 ## How to build this project
 

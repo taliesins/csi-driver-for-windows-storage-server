@@ -55,6 +55,17 @@ app.kubernetes.io/component: {{ .component | quote }}
 {{- end }}
 
 {{/*
+Default settings for the consolidated CSI driver entry.
+*/}}
+{{- define "csi-driver-for-windows-storage-server.driverDefaults" -}}
+enabled: true
+name: windows-storage.csi.windows.microsoft.com
+attachRequired: true
+needsIscsi: true
+livenessPort: 29753
+{{- end }}
+
+{{/*
 Create the name of the node service account to use
 */}}
 {{- define "csi-driver-for-windows-storage-server.nodeServiceAccountName" -}}

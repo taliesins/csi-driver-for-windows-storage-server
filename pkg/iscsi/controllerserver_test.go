@@ -238,12 +238,6 @@ func newTestControllerServerForProtocolAndBackend(t *testing.T, protocol Protoco
 	mockBackend := &mockBackend{}
 	name, err := driverNameForProtocol(protocol)
 	require.NoError(t, err)
-	if protocol == ProtocolNFS && fileShareBackend == fileShareBackendVHDX {
-		name = nfsVHDXDriverName
-	}
-	if protocol == ProtocolSMB && fileShareBackend == fileShareBackendVHDX {
-		name = smbVHDXDriverName
-	}
 	d := newNamedProtocolDriverWithShareBackend(name, protocol, fileShareBackend, "node-001", "unix:///var/run/csi/csi.sock")
 	d.backend = mockBackend
 	cs := NewControllerServer(d)

@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -27,6 +28,8 @@ import (
 	"github.com/taliesins/csi-driver-for-windows-storage-server/pkg/iscsi"
 	klog "k8s.io/klog/v2"
 )
+
+var errNodeIDNotFound = errors.New("no node id found")
 
 var (
 	endpoint   = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
@@ -60,12 +63,12 @@ func handle() {
 		klog.Fatalf("invalid --mode: %v", err)
 	}
 
-	resolvedNodeID, err := resolveNodeID(*nodeID, *nodeIDFile)
+	resolvedNodeID, err := resolveNodeID(*nodeID, *nodeIDFile, os.Getenv("KUBE_NODE_NAME"))
 	if err != nil {
 		klog.Fatalf("invalid node id: %v", err)
 	}
 	if driverMode == iscsi.DriverModeNode && resolvedNodeID == "" {
-		klog.Fatalf("--nodeid or --nodeid-file is required in node mode")
+		klog.Fatalf("--nodeid, --nodeid-file, or KUBE_NODE_NAME is required in node mode")
 	}
 
 	d := iscsi.NewDriver(resolvedNodeID, *endpoint)
@@ -86,15 +89,23 @@ func handle() {
 	})
 }
 
-func resolveNodeID(explicitNodeID, nodeIDFile string) (string, error) {
+func resolveNodeID(explicitNodeID, nodeIDFile, fallbackNodeID string) (string, error) {
 	if value := strings.TrimSpace(explicitNodeID); value != "" {
 		return value, nil
 	}
+	fallbackNodeID = strings.TrimSpace(fallbackNodeID)
 	nodeIDFile = strings.TrimSpace(nodeIDFile)
 	if nodeIDFile == "" {
-		return "", nil
+		return fallbackNodeID, nil
 	}
-	return readNodeIDFile(nodeIDFile)
+	resolvedNodeID, err := readNodeIDFile(nodeIDFile)
+	if err == nil {
+		return resolvedNodeID, nil
+	}
+	if fallbackNodeID != "" && (os.IsNotExist(err) || errors.Is(err, errNodeIDNotFound)) {
+		return fallbackNodeID, nil
+	}
+	return "", err
 }
 
 func readNodeIDFile(path string) (string, error) {
@@ -105,7 +116,7 @@ func readNodeIDFile(path string) (string, error) {
 	if nodeID := parseNodeIDContent(string(content)); nodeID != "" {
 		return nodeID, nil
 	}
-	return "", fmt.Errorf("no node id found in %s", path)
+	return "", fmt.Errorf("%w in %s", errNodeIDNotFound, path)
 }
 
 func parseNodeIDContent(content string) string {

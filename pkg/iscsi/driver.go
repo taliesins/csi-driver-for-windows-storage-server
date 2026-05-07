@@ -126,11 +126,6 @@ type driver struct {
 }
 
 const driverName = "windows-storage.csi.windows.microsoft.com"
-const legacyISCSIDriverName = "iscsi.csi.windows.microsoft.com"
-const nfsDriverName = "nfs.csi.windows.microsoft.com"
-const smbDriverName = "smb.csi.windows.microsoft.com"
-const nfsVHDXDriverName = "nfs-vhdx.csi.windows.microsoft.com"
-const smbVHDXDriverName = "smb-vhdx.csi.windows.microsoft.com"
 
 var version = "0.1.0"
 
@@ -267,16 +262,6 @@ func driverConfigForName(name string) (Protocol, string, error) {
 	switch strings.TrimSpace(name) {
 	case driverName:
 		return "", "", nil
-	case legacyISCSIDriverName:
-		return ProtocolISCSI, "", nil
-	case nfsDriverName:
-		return ProtocolNFS, fileShareBackendDirectory, nil
-	case smbDriverName:
-		return ProtocolSMB, fileShareBackendDirectory, nil
-	case nfsVHDXDriverName:
-		return ProtocolNFS, fileShareBackendVHDX, nil
-	case smbVHDXDriverName:
-		return ProtocolSMB, fileShareBackendVHDX, nil
 	default:
 		return "", "", fmt.Errorf("unknown CSI driver name: %s", name)
 	}

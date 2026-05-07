@@ -84,38 +84,6 @@ func TestNewNamedDriver(t *testing.T) {
 	assert.True(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS))
 }
 
-func TestNewNamedDriver_LegacyProtocolNames(t *testing.T) {
-	d := NewNamedDriver("nfs.csi.windows.microsoft.com", "node-001", "unix:///var/run/csi/csi.sock")
-	assert.Equal(t, "nfs.csi.windows.microsoft.com", d.name)
-	assert.Equal(t, ProtocolNFS, d.protocol)
-	assert.Equal(t, fileShareBackendDirectory, d.fileShareBackend)
-	assert.False(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT))
-	assert.False(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS))
-}
-
-func TestNewNamedDriver_VHDXBackedFileShares(t *testing.T) {
-	tests := []struct {
-		name       string
-		driverName string
-		protocol   Protocol
-	}{
-		{name: "nfs", driverName: nfsVHDXDriverName, protocol: ProtocolNFS},
-		{name: "smb", driverName: smbVHDXDriverName, protocol: ProtocolSMB},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			d := NewNamedDriver(tt.driverName, "node-001", "unix:///var/run/csi/csi.sock")
-			assert.Equal(t, tt.driverName, d.name)
-			assert.Equal(t, tt.protocol, d.protocol)
-			assert.Equal(t, fileShareBackendVHDX, d.fileShareBackend)
-			assert.Len(t, d.cap, 6)
-			assert.Len(t, d.cscap, 7)
-			assert.True(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT))
-			assert.True(t, driverHasControllerCapability(d, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS))
-		})
-	}
-}
-
 func TestNewNamedDriver_UnknownDefaultsToISCSI(t *testing.T) {
 	d := NewNamedDriver("unknown.csi.windows.microsoft.com", "node-001", "unix:///var/run/csi/csi.sock")
 
@@ -132,11 +100,6 @@ func TestDriverNameAndConfigHelpers(t *testing.T) {
 		wantShareBackend string
 	}{
 		{name: "consolidated", driverName: driverName, wantProtocol: ""},
-		{name: "legacy iscsi", driverName: legacyISCSIDriverName, wantProtocol: ProtocolISCSI},
-		{name: "nfs directory", driverName: nfsDriverName, wantProtocol: ProtocolNFS, wantShareBackend: fileShareBackendDirectory},
-		{name: "smb directory", driverName: smbDriverName, wantProtocol: ProtocolSMB, wantShareBackend: fileShareBackendDirectory},
-		{name: "nfs vhdx", driverName: nfsVHDXDriverName, wantProtocol: ProtocolNFS, wantShareBackend: fileShareBackendVHDX},
-		{name: "smb vhdx", driverName: smbVHDXDriverName, wantProtocol: ProtocolSMB, wantShareBackend: fileShareBackendVHDX},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,6 +116,17 @@ func TestDriverNameAndConfigHelpers(t *testing.T) {
 
 	_, _, err := driverConfigForName("bad-driver")
 	assert.Error(t, err)
+
+	for _, legacyDriverName := range []string{
+		"iscsi.csi.windows.microsoft.com",
+		"nfs.csi.windows.microsoft.com",
+		"smb.csi.windows.microsoft.com",
+		"nfs-vhdx.csi.windows.microsoft.com",
+		"smb-vhdx.csi.windows.microsoft.com",
+	} {
+		_, _, err := driverConfigForName(legacyDriverName)
+		assert.Error(t, err)
+	}
 
 	_, err = protocolForDriverName("bad-driver")
 	assert.Error(t, err)
@@ -646,10 +620,10 @@ func TestDriverRunDirectoryUsesConfiguredBaseDir(t *testing.T) {
 	runDir := t.TempDir()
 	t.Setenv(driverRunDirEnv, runDir)
 
-	d := NewNamedDriver("nfs.csi.windows.microsoft.com", "node-001", "tcp://127.0.0.1:10000")
+	d := NewDriver("node-001", "tcp://127.0.0.1:10000")
 	d.ensureRunDirectory()
 
-	info, err := os.Stat(filepath.Join(runDir, "nfs.csi.windows.microsoft.com"))
+	info, err := os.Stat(filepath.Join(runDir, driverName))
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
 }
