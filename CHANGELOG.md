@@ -1,3 +1,10 @@
+## [1.1.2](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.1.1...v1.1.2) (2026-05-07)
+
+### Bug Fixes
+
+* Code Rabbit suggestions ([dd7a4d8](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/dd7a4d83013403b02c8719fce9c58810b4c65113))
+* Update helm chart for nfs and smb ([8ad4e1d](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/8ad4e1d0b0d9afe683e8b8d4a34be8603b1eff71))
+
 ## [1.1.1](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.1.0...v1.1.1) (2026-05-05)
 
 ### Bug Fixes
