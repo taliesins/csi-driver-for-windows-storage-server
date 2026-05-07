@@ -10,7 +10,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: iscsi-for-windows-rwo
   csi:
-    driver: iscsi.csi.windows.microsoft.com
+    driver: windows-storage.csi.windows.microsoft.com
     volumeHandle: "iscsi://win-storage.lab.local:3260/iqn.1991-05.com.microsoft:win-storage-preprovisioned-iscsi/lun/0?name=preprovisioned-iscsi&targetName=preprovisioned-iscsi&vhdxPath=E%3A%5CiSCSIVirtualDisks%5Cpreprovisioned-iscsi.vhdx&capacityBytes=1073741824"
     fsType: xfs
     volumeAttributes: {}

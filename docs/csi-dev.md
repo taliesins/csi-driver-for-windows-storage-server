@@ -86,7 +86,7 @@ Use `--mode=node` for node RPCs such as stage, publish, unpublish, and node info
 
 ```console
 $ csc identity plugin-info --endpoint "$endpoint"
-"iscsi.csi.windows.microsoft.com"    "v2.0.0"
+"windows-storage.csi.windows.microsoft.com"    "v2.0.0"
 ```
 
 - Publish an iscsi volume

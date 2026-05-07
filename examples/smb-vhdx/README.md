@@ -1,6 +1,6 @@
 # SMB VHDX Examples
 
-These examples use `smb-vhdx.csi.windows.microsoft.com` and
+These examples use `windows-storage.csi.windows.microsoft.com` and
 `StorageClass/smb-vhdx-for-windows-rwx`. This mode creates one VHDX per volume,
 mounts it on the Windows storage server, and shares that mounted path through
 SMB.

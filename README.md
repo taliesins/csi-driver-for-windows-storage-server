@@ -2,17 +2,19 @@
 
 ### Overview
 
-This repository provides CSI drivers for dynamic provisioning of Windows File Storage Server volumes over **iSCSI**, **NFS**, and **SMB** protocols. The drivers support dynamic provisioning, snapshots, restore, online expansion, and static PV import.
+This repository provides a consolidated CSI driver for dynamic provisioning of Windows File Storage Server volumes over **iSCSI**, **NFS**, and **SMB** protocols. The driver supports dynamic provisioning, snapshots, restore, online expansion, and static PV import.
 
-### Supported Drivers
+### Supported Modes
 
-| Driver | CSI Plugin Name | Storage Class | Access Mode | Backing Store |
+All modes use the CSI plugin name `windows-storage.csi.windows.microsoft.com`. StorageClasses select the backend with the `protocol` parameter and, for NFS/SMB, the optional `shareBackend` parameter.
+
+| Mode | Storage Class | Parameters | Access Mode | Backing Store |
 |--------|-----------------|---------------|-------------|---------------|
-| iSCSI | `iscsi.csi.windows.microsoft.com` | `iscsi-for-windows-rwo` | RWO | VHDX + iSCSI target |
-| NFS (directory) | `nfs.csi.windows.microsoft.com` | `nfs-for-windows-rwx` | RWX | Directories |
-| NFS VHDX | `nfs-vhdx.csi.windows.microsoft.com` | `nfs-vhdx-for-windows-rwx` | RWX | One VHDX per volume |
-| SMB (directory) | `smb.csi.windows.microsoft.com` | `smb-for-windows-rwx` | RWX | Directories |
-| SMB VHDX | `smb-vhdx.csi.windows.microsoft.com` | `smb-vhdx-for-windows-rwx` | RWX | One VHDX per volume |
+| iSCSI | `iscsi-for-windows-rwo` | `protocol: iscsi` | RWO | VHDX + iSCSI target |
+| NFS (directory) | `nfs-for-windows-rwx` | `protocol: nfs`, `shareBackend: directory` | RWX | Directories |
+| NFS VHDX | `nfs-vhdx-for-windows-rwx` | `protocol: nfs`, `shareBackend: vhdx` | RWX | One VHDX per volume |
+| SMB (directory) | `smb-for-windows-rwx` | `protocol: smb`, `shareBackend: directory` | RWX | Directories |
+| SMB VHDX | `smb-vhdx-for-windows-rwx` | `protocol: smb`, `shareBackend: vhdx` | RWX | One VHDX per volume |
 
 ### Feature Matrix
 

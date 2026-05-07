@@ -125,7 +125,8 @@ type driver struct {
 	backend Backend // <-- wired for controllerserver.go to use
 }
 
-const driverName = "iscsi.csi.windows.microsoft.com"
+const driverName = "windows-storage.csi.windows.microsoft.com"
+const legacyISCSIDriverName = "iscsi.csi.windows.microsoft.com"
 const nfsDriverName = "nfs.csi.windows.microsoft.com"
 const smbDriverName = "smb.csi.windows.microsoft.com"
 const nfsVHDXDriverName = "nfs-vhdx.csi.windows.microsoft.com"
@@ -167,7 +168,7 @@ func ParseDriverMode(value string) (DriverMode, error) {
 }
 
 func NewDriver(nodeID, endpoint string) *driver {
-	return NewProtocolDriver(ProtocolISCSI, nodeID, endpoint)
+	return NewNamedDriver(driverName, nodeID, endpoint)
 }
 
 func NewProtocolDriver(protocol Protocol, nodeID, endpoint string) *driver {
@@ -216,7 +217,7 @@ func newNamedProtocolDriverWithShareBackend(name string, protocol Protocol, file
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER,
 	}
-	if protocol == ProtocolNFS || protocol == ProtocolSMB {
+	if protocol == "" || protocol == ProtocolNFS || protocol == ProtocolSMB {
 		accessModes = append(accessModes,
 			csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
 			csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
@@ -233,10 +234,10 @@ func newNamedProtocolDriverWithShareBackend(name string, protocol Protocol, file
 		// If your CSI lib includes this enum (it should, since ControllerGetVolume is implemented):
 		csi.ControllerServiceCapability_RPC_GET_VOLUME,
 	}
-	if protocol == ProtocolISCSI || fileShareBackend == fileShareBackendVHDX {
+	if protocol == "" || protocol == ProtocolISCSI || fileShareBackend == fileShareBackendVHDX {
 		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT)
 	}
-	if protocol == ProtocolISCSI || fileShareBackend == fileShareBackendVHDX {
+	if protocol == "" || protocol == ProtocolISCSI || fileShareBackend == fileShareBackendVHDX {
 		controllerCaps = append(controllerCaps, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS)
 	}
 	d.AddControllerServiceCapabilities(controllerCaps)
@@ -249,9 +250,9 @@ func driverNameForProtocol(protocol Protocol) (string, error) {
 	case ProtocolISCSI:
 		return driverName, nil
 	case ProtocolNFS:
-		return nfsDriverName, nil
+		return driverName, nil
 	case ProtocolSMB:
-		return smbDriverName, nil
+		return driverName, nil
 	default:
 		return "", fmt.Errorf("unknown protocol: %s", protocol)
 	}
@@ -265,6 +266,8 @@ func protocolForDriverName(name string) (Protocol, error) {
 func driverConfigForName(name string) (Protocol, string, error) {
 	switch strings.TrimSpace(name) {
 	case driverName:
+		return "", "", nil
+	case legacyISCSIDriverName:
 		return ProtocolISCSI, "", nil
 	case nfsDriverName:
 		return ProtocolNFS, fileShareBackendDirectory, nil

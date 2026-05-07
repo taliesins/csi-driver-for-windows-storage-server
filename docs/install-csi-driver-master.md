@@ -139,15 +139,15 @@ cd csi-driver-for-windows-storage-server
 - check pods status:
 
 ```console
-kubectl -n kube-system get pod -o wide -l app=csi-iscsi-for-windows-node
+kubectl -n kube-system get pod -o wide -l app=csi-windows-storage-node
 ```
 
 example output:
 
 ```console
 NAME                                       READY   STATUS    RESTARTS   AGE     IP             NODE
-csi-iscsi-for-windows-node-cvgbs                        3/3     Running   0          35s     10.240.0.35    k8s-agentpool-22533604-1
-csi-iscsi-for-windows-node-dr4s4                        3/3     Running   0          35s     10.240.0.4     k8s-agentpool-22533604-0
+csi-windows-storage-node-cvgbs                        3/3     Running   0          35s     10.240.0.35    k8s-agentpool-22533604-1
+csi-windows-storage-node-dr4s4                        3/3     Running   0          35s     10.240.0.4     k8s-agentpool-22533604-0
 ```
 
 - clean up ISCSI CSI driver

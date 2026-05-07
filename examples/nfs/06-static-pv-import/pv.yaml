@@ -10,6 +10,6 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: nfs-for-windows-rwx
   csi:
-    driver: nfs.csi.windows.microsoft.com
+    driver: windows-storage.csi.windows.microsoft.com
     volumeHandle: "nfs://win-storage.lab.local/preprovisioned-nfs?name=preprovisioned-nfs&shareBackend=directory&sharePath=E%3A%5CNfsShares%5Cpreprovisioned-nfs&vhdxPath=E%3A%5CNfsShares%5Cpreprovisioned-nfs&capacityBytes=1073741824"
     volumeAttributes: {}

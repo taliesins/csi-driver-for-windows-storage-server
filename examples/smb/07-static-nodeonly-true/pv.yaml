@@ -10,7 +10,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   csi:
-    driver: smb.csi.windows.microsoft.com
+    driver: windows-storage.csi.windows.microsoft.com
     volumeHandle: "static-nodeonly-smb"
     nodeStageSecretRef:
       name: static-smb-credentials

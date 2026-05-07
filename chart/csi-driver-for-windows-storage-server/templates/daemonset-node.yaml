@@ -1,5 +1,6 @@
 {{- $root := . -}}
-{{- range $key, $driver := .Values.drivers }}
+{{- $key := "windows-storage" -}}
+{{- $driver := get .Values.drivers $key | default (dict "enabled" true "name" "windows-storage.csi.windows.microsoft.com" "attachRequired" true "needsIscsi" true "livenessPort" 29753) -}}
 {{- if $driver.enabled }}
 ---
 apiVersion: apps/v1
@@ -140,8 +141,6 @@ spec:
             path: /var/run/{{ $driver.name }}
             type: DirectoryOrCreate
 {{- end }}
-{{- end }}
-{{- range $key, $driver := .Values.drivers }}
 {{- if and $driver.enabled $driver.needsIscsi }}
 ---
 apiVersion: v1
@@ -166,5 +165,4 @@ data:
     else
       chroot /host iscsiadm "$@"
     fi
-{{- end }}
 {{- end }}

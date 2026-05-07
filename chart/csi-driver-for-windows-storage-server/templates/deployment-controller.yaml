@@ -1,6 +1,7 @@
 {{- if not .Values.nodeOnly }}
 {{- $root := . -}}
-{{- range $key, $driver := .Values.drivers }}
+{{- $key := "windows-storage" -}}
+{{- $driver := get .Values.drivers $key | default (dict "enabled" true "name" "windows-storage.csi.windows.microsoft.com" "attachRequired" true "needsIscsi" true "livenessPort" 29753) -}}
 {{- if $driver.enabled }}
 ---
 apiVersion: apps/v1
@@ -121,6 +122,5 @@ spec:
       volumes:
         - name: socket-dir
           emptyDir: {}
-{{- end }}
 {{- end }}
 {{- end }}

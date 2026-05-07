@@ -157,12 +157,8 @@ ensure_winrm_secret() {
 }
 
 enable_nfs_kerberos() {
-  echo "Enabling NFS Kerberos environment for NFS node daemonsets..."
-  kubectl -n kube-system set env daemonset/csi-nfs-node -c nfs \
-    KRB5_CONFIG=/host/etc/krb5.conf \
-    KRB5_KTNAME=FILE:/host/etc/krb5.keytab \
-    KRB5_CLIENT_KTNAME=FILE:/host/etc/krb5.keytab
-  kubectl -n kube-system set env daemonset/csi-nfs-vhdx-node -c nfs-vhdx \
+  echo "Enabling NFS Kerberos environment for the Windows storage node daemonset..."
+  kubectl -n kube-system set env daemonset/csi-windows-storage-node -c windows-storage \
     KRB5_CONFIG=/host/etc/krb5.conf \
     KRB5_KTNAME=FILE:/host/etc/krb5.keytab \
     KRB5_CLIENT_KTNAME=FILE:/host/etc/krb5.keytab
@@ -181,15 +177,7 @@ else
   apply_controller_manifest
   apply_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
 fi
-apply_manifest "csi-nfs-for-windows-driverinfo.yaml"
-apply_manifest "csi-nfs-vhdx-for-windows-driverinfo.yaml"
-apply_manifest "csi-smb-for-windows-driverinfo.yaml"
-apply_manifest "csi-smb-vhdx-for-windows-driverinfo.yaml"
 apply_manifest "csi-driver-for-windows-storage-server-node.yaml"
-apply_manifest "csi-nfs-for-windows-node.yaml"
-apply_manifest "csi-nfs-vhdx-for-windows-node.yaml"
-apply_manifest "csi-smb-for-windows-node.yaml"
-apply_manifest "csi-smb-vhdx-for-windows-node.yaml"
 
 if [[ "$nfs_kerberos" == true ]]; then
   enable_nfs_kerberos

@@ -23,36 +23,12 @@ node:
     name: ""
 
 drivers:
-  iscsi:
+  windows-storage:
     enabled: true
-    name: iscsi.csi.windows.microsoft.com
+    name: windows-storage.csi.windows.microsoft.com
     attachRequired: true
     needsIscsi: true
     livenessPort: 29753
-  nfs:
-    enabled: true
-    name: nfs.csi.windows.microsoft.com
-    attachRequired: false
-    needsIscsi: false
-    livenessPort: 29754
-  nfs-vhdx:
-    enabled: true
-    name: nfs-vhdx.csi.windows.microsoft.com
-    attachRequired: false
-    needsIscsi: false
-    livenessPort: 29756
-  smb:
-    enabled: true
-    name: smb.csi.windows.microsoft.com
-    attachRequired: false
-    needsIscsi: false
-    livenessPort: 29755
-  smb-vhdx:
-    enabled: true
-    name: smb-vhdx.csi.windows.microsoft.com
-    attachRequired: false
-    needsIscsi: false
-    livenessPort: 29757
 
 sidecars:
   logLevel: 2

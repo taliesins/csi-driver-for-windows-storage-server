@@ -1,6 +1,6 @@
 # NFS Examples
 
-These examples use `nfs.csi.windows.microsoft.com` and
+These examples use `windows-storage.csi.windows.microsoft.com` and
 `StorageClass/nfs-for-windows-rwx`. This is the directory-backed NFS mode: each
 dynamic volume is a normal folder under `shareParentPath`, and static PVs can
 point at an existing NFS export path.

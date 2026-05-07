@@ -10,7 +10,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   csi:
-    driver: nfs-vhdx.csi.windows.microsoft.com
+    driver: windows-storage.csi.windows.microsoft.com
     volumeHandle: "static-nodeonly-nfs-vhdx"
     volumeAttributes:
       protocol: "nfs"

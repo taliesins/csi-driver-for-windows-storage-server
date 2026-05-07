@@ -76,16 +76,29 @@ delete_manifest() {
 }
 
 echo "Uninstalling Windows storage CSI drivers, version: $ver ..."
-delete_manifest "csi-smb-vhdx-for-windows-node.yaml"
-delete_manifest "csi-smb-for-windows-node.yaml"
-delete_manifest "csi-nfs-vhdx-for-windows-node.yaml"
-delete_manifest "csi-nfs-for-windows-node.yaml"
 delete_manifest "csi-driver-for-windows-storage-server-node.yaml"
 delete_manifest "csi-driver-for-windows-storage-server-controller.yaml"
-delete_manifest "csi-smb-vhdx-for-windows-driverinfo.yaml"
-delete_manifest "csi-smb-for-windows-driverinfo.yaml"
-delete_manifest "csi-nfs-vhdx-for-windows-driverinfo.yaml"
-delete_manifest "csi-nfs-for-windows-driverinfo.yaml"
 delete_manifest "csi-driver-for-windows-storage-server-driverinfo-nodeonly.yaml"
 delete_manifest "csi-driver-for-windows-storage-server-driverinfo.yaml"
+kubectl -n kube-system delete daemonset \
+  csi-iscsi-node \
+  csi-nfs-node \
+  csi-nfs-vhdx-node \
+  csi-smb-node \
+  csi-smb-vhdx-node \
+  --ignore-not-found
+kubectl -n kube-system delete deployment \
+  csi-iscsi-controller \
+  csi-nfs-controller \
+  csi-nfs-vhdx-controller \
+  csi-smb-controller \
+  csi-smb-vhdx-controller \
+  --ignore-not-found
+kubectl delete csidriver \
+  iscsi.csi.windows.microsoft.com \
+  nfs.csi.windows.microsoft.com \
+  nfs-vhdx.csi.windows.microsoft.com \
+  smb.csi.windows.microsoft.com \
+  smb-vhdx.csi.windows.microsoft.com \
+  --ignore-not-found
 echo 'Windows storage CSI drivers uninstalled successfully.'

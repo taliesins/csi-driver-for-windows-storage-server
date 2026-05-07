@@ -1,6 +1,6 @@
 # SMB Examples
 
-These examples use `smb.csi.windows.microsoft.com` and
+These examples use `windows-storage.csi.windows.microsoft.com` and
 `StorageClass/smb-for-windows-rwx`. This is the directory-backed SMB mode: each
 dynamic volume is a normal folder under `shareParentPath`, and static PVs can
 point at an existing SMB share path.

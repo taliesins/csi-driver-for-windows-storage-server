@@ -10,6 +10,6 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: smb-for-windows-rwx
   csi:
-    driver: smb.csi.windows.microsoft.com
+    driver: windows-storage.csi.windows.microsoft.com
     volumeHandle: "smb://win-storage.lab.local/preprovisioned-smb?name=preprovisioned-smb&shareBackend=directory&sharePath=E%3A%5CSmbShares%5Cpreprovisioned-smb&vhdxPath=E%3A%5CSmbShares%5Cpreprovisioned-smb&capacityBytes=1073741824"
     volumeAttributes: {}

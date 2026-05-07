@@ -27,14 +27,22 @@ Create the name of the node resources
 Create the name of a controller Deployment for one CSI driver.
 */}}
 {{- define "csi-driver-for-windows-storage-server.driverControllerName" -}}
+{{- if eq .key "windows-storage" -}}
+{{- include "csi-driver-for-windows-storage-server.controllerName" .root -}}
+{{- else -}}
 {{- printf "%s-%s-controller" ((include "csi-driver-for-windows-storage-server.fullname" .root) | trunc 44 | trimSuffix "-") .key | trunc 63 | trimSuffix "-" }}
+{{- end -}}
 {{- end }}
 
 {{/*
 Create the name of a node DaemonSet for one CSI driver.
 */}}
 {{- define "csi-driver-for-windows-storage-server.driverNodeName" -}}
+{{- if eq .key "windows-storage" -}}
+{{- include "csi-driver-for-windows-storage-server.nodeName" .root -}}
+{{- else -}}
 {{- printf "%s-%s-node" ((include "csi-driver-for-windows-storage-server.fullname" .root) | trunc 50 | trimSuffix "-") .key | trunc 63 | trimSuffix "-" }}
+{{- end -}}
 {{- end }}
 
 {{/*

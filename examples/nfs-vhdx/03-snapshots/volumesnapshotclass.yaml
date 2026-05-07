@@ -2,6 +2,6 @@ apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: nfs-vhdx-for-windows-snapclass
-driver: nfs-vhdx.csi.windows.microsoft.com
+driver: windows-storage.csi.windows.microsoft.com
 deletionPolicy: Delete
 parameters: {}
