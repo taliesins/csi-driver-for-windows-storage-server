@@ -56,6 +56,8 @@ winrm:
   password: "<password>"
 ```
 
+Use `insecure: true` only as a fallback for self-signed certificates or isolated lab/testing environments.
+
 Use `auth: ntlm` when testing shows the Windows listener requires Negotiate/NTLM for the account you are using.
 
 ## Kubernetes nodes

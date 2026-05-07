@@ -144,14 +144,15 @@ RUN curl -sSL https://github.com/goreleaser/goreleaser/releases/download/${GOREL
 # Create and set permissions for various tooling directories
 ARG CONTAINER_USER=vscode
 ARG CONTAINER_GROUP=vscode
+ARG CONTAINER_GID=1000
 USER root
-# When sharing files between devcontainers we need to have the same guid between them. The default GID is 1000 for vscode.
+# When sharing files between devcontainers we need to have the same GID between them. The default GID is 1000 for vscode.
 RUN set -eux; \
-    # Ensure group exists for the GID
+    # Ensure group exists
     if ! getent group "${CONTAINER_GROUP}" >/dev/null; then \
-    groupadd --gid "${CONTAINER_GROUP}" shared-group; \
+    groupadd --gid "${CONTAINER_GID}" "${CONTAINER_GROUP}"; \
     fi; \
-    # Resolve group name from GID
+    # Resolve group name
     GROUP_NAME="$(getent group "${CONTAINER_GROUP}" | cut -d: -f1)"; \
     # Only add user to group if not already a member
     if ! id -nG "${CONTAINER_USER}" | grep -qw "${GROUP_NAME}"; then \

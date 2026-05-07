@@ -486,6 +486,12 @@ func TestCreateVolume_InvalidISCSIParameters(t *testing.T) {
 			wantErr:    "portalPort must be between 1 and 65535",
 		},
 		{
+			name:       "portal port conflicts with target portal port",
+			volumeName: "test-volume",
+			params:     map[string]string{"targetPortal": "storage.example.test:3260", "portalPort": "3261"},
+			wantErr:    "portalPort 3261 conflicts with targetPortal port 3260",
+		},
+		{
 			name:       "relative vhdx path",
 			volumeName: "test-volume",
 			params:     map[string]string{"targetPortal": "storage.example.test", "vhdxParentPath": "relative\\path"},
@@ -1868,6 +1874,62 @@ func TestGetCapacity_FileShareDriverUsesShareParentPath(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), resp.AvailableCapacity)
+}
+
+func TestGetCapacity_ValidatesParentPaths(t *testing.T) {
+	tests := []struct {
+		name             string
+		protocol         Protocol
+		fileShareBackend string
+		params           map[string]string
+		wantErr          string
+	}{
+		{
+			name:    "rejects invalid vhdx parent path",
+			params:  map[string]string{"vhdxParentPath": "relative\\path"},
+			wantErr: "vhdxParentPath must be an absolute Windows path",
+		},
+		{
+			name:     "rejects missing share parent path",
+			protocol: ProtocolNFS,
+			params:   map[string]string{},
+			wantErr:  "shareParentPath is required",
+		},
+		{
+			name:     "rejects traversal in share parent path",
+			protocol: ProtocolNFS,
+			params:   map[string]string{"shareParentPath": "D:\\shares\\..\\escape"},
+			wantErr:  "shareParentPath must not contain '..' path segments",
+		},
+		{
+			name:             "rejects invalid vhdx parent path for vhdx-backed shares",
+			protocol:         ProtocolNFS,
+			fileShareBackend: fileShareBackendVHDX,
+			params:           map[string]string{"shareParentPath": "D:\\shares", "vhdxParentPath": "relative\\path"},
+			wantErr:          "vhdxParentPath must be an absolute Windows path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol := tt.protocol
+			if protocol == "" {
+				protocol = ProtocolISCSI
+			}
+			cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, protocol, tt.fileShareBackend)
+			mockBackend.getDirectoryFreeCapFn = func(ctx context.Context, parentDir string) (int64, error) {
+				t.Fatalf("GetDirectoryFreeCapacity should not be called with invalid params; parentDir: %s", parentDir)
+				return 0, nil
+			}
+
+			_, err := cs.GetCapacity(context.Background(), &csi.GetCapacityRequest{
+				Parameters: tt.params,
+			})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -966,6 +966,17 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if err != nil {
 		return nil, err
 	}
+	if _, portalPortProvided := getStringParam(params, "portalPort"); portalPortProvided {
+		if _, targetPortalPortValue, err := net.SplitHostPort(targetPortal); err == nil {
+			targetPortalPort, err := strconv.Atoi(targetPortalPortValue)
+			if err != nil {
+				return nil, status.Error(codes.InvalidArgument, "parameter targetPortal port must be an integer between 1 and 65535")
+			}
+			if portalPort != targetPortalPort {
+				return nil, status.Errorf(codes.InvalidArgument, "parameter portalPort %d conflicts with targetPortal port %d", portalPort, targetPortalPort)
+			}
+		}
+	}
 	parentDir, _ := getStringParam(params, "vhdxParentPath")
 	if err := validateWindowsPathParam("vhdxParentPath", parentDir, false); err != nil {
 		return nil, err
@@ -1579,23 +1590,25 @@ func (cs *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacit
 	if err != nil {
 		return nil, err
 	}
-	key := "vhdxParentPath"
-	required := false
+	shareParentDir, _ := getStringParam(params, "shareParentPath")
+	vhdxParentDir, _ := getStringParam(params, "vhdxParentPath")
+	shareParentRequired := false
+	parentDir := vhdxParentDir
 	if protocol == ProtocolNFS || protocol == ProtocolSMB {
-		key = "shareParentPath"
-		required = true
 		shareBackend, err := cs.fileShareBackendFromParams(params)
 		if err != nil {
 			return nil, err
 		}
-		if shareBackend == fileShareBackendVHDX {
-			key = "vhdxParentPath"
-			required = false
+		if shareBackend != fileShareBackendVHDX {
+			shareParentRequired = true
+			parentDir = shareParentDir
 		}
 	}
-	parentDir, ok := getStringParam(params, key)
-	if !ok && required {
-		return nil, status.Errorf(codes.InvalidArgument, "parameter %s is required", key)
+	if err := validateWindowsPathParam("shareParentPath", shareParentDir, shareParentRequired); err != nil {
+		return nil, err
+	}
+	if err := validateWindowsPathParam("vhdxParentPath", vhdxParentDir, false); err != nil {
+		return nil, err
 	}
 	free, err := cs.Driver.backend.GetDirectoryFreeCapacity(ctx, parentDir)
 	if err != nil {
