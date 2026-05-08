@@ -1,6 +1,8 @@
 # iSCSI Filesystem PVC and Pod
 
-Creates a 1Gi RWO PVC and runs Postgres mounting it.
+Creates a 1Gi RWO PVC and runs Postgres mounting it. The pod sets `PGDATA` to a
+subdirectory under the mount because PostgreSQL refuses to initialize directly
+on a filesystem root that contains `lost+found`.
 
 ## Apply
 

@@ -305,6 +305,17 @@ func TestConnectorPersistAndGetConnectorFromFile(t *testing.T) {
 	assert.Equal(t, "sdb", got.Devices[0].Name)
 }
 
+func TestDisconnectLogsOutFullPortalAndDeletesDBEntry(t *testing.T) {
+	calls := captureExecWithTimeout(t, nil, nil)
+
+	err := Disconnect("iqn.2024-01.com.example:vol-001", []string{"10.0.0.1:3260"})
+
+	require.NoError(t, err)
+	require.Len(t, *calls, 2)
+	assert.Equal(t, []string{"-m", "node", "-T", "iqn.2024-01.com.example:vol-001", "-p", "10.0.0.1:3260", "-u"}, (*calls)[0].args)
+	assert.Equal(t, []string{"-m", "node", "-T", "iqn.2024-01.com.example:vol-001", "-o", "delete"}, (*calls)[1].args)
+}
+
 func TestGetConnectorFromFileRequiresMountTargetDevice(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "connector.json")
 	require.NoError(t, os.WriteFile(filePath, []byte(`{"volume_name":"vol-001"}`), 0o600))

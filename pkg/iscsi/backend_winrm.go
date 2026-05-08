@@ -373,23 +373,82 @@ if ($mappedTargets -notcontains '%s') {
 
 func (b *WinRMBackend) UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error {
 	s := fmt.Sprintf(`
-if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -ErrorAction SilentlyContinue) {
-  Remove-IscsiVirtualDiskTargetMapping -ComputerName $IscsiTargetComputerName -TargetName '%s' -Path '%s' -ErrorAction SilentlyContinue
+$targetName = '%s'
+$path = '%s'
+$target = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -ErrorAction SilentlyContinue
+if ($target -and @($target.LunMappings | Where-Object { $_.Path -eq $path }).Count -gt 0) {
+  Remove-IscsiVirtualDiskTargetMapping -ComputerName $IscsiTargetComputerName -TargetName $targetName -Path $path -ErrorAction Stop
+  $target = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -ErrorAction SilentlyContinue
+  if ($target -and @($target.LunMappings | Where-Object { $_.Path -eq $path }).Count -gt 0) {
+    throw "failed to remove iSCSI target mapping '$targetName' -> '$path'"
+  }
 }
 @{ ok = $true }
-`, escapePS(vhdxPath), escapePS(targetName), escapePS(vhdxPath))
+`, escapePS(targetName), escapePS(vhdxPath))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }
 
 func (b *WinRMBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) error {
 	s := fmt.Sprintf(`
-if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -ErrorAction SilentlyContinue) {
-  Remove-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -ErrorAction SilentlyContinue
+$path = '%s'
+if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path -ErrorAction SilentlyContinue) {
+  Remove-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path -ErrorAction Stop
 }
-if (Test-Path -LiteralPath '%s') { Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath $path) {
+  Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+}
+if (Test-Path -LiteralPath $path) {
+  throw "failed to delete iSCSI virtual disk file '$path'"
+}
 @{ ok = $true }
-`, escapePS(vhdxPath), escapePS(vhdxPath), escapePS(vhdxPath), escapePS(vhdxPath))
+`, escapePS(vhdxPath))
+	var out map[string]any
+	return b.runPS(ctx, s, &out)
+}
+
+func (b *WinRMBackend) LookupTargetNameByIQN(ctx context.Context, targetIQN string) (string, error) {
+	targetIQN = strings.TrimSpace(targetIQN)
+	if targetIQN == "" {
+		return "", nil
+	}
+	s := fmt.Sprintf(`
+$targetIQN = '%s'
+$target = @(Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -ErrorAction SilentlyContinue | Where-Object { [string]$_.TargetIqn -eq $targetIQN } | Select-Object -First 1)[0]
+if ($target) {
+  @{ targetName=[string]$target.TargetName }
+} else {
+  @{ targetName='' }
+}
+`, escapePS(targetIQN))
+	var out struct {
+		TargetName string `json:"targetName"`
+	}
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.TargetName), nil
+}
+
+func (b *WinRMBackend) DeleteTarget(ctx context.Context, targetName string) error {
+	targetName = strings.TrimSpace(targetName)
+	if targetName == "" {
+		return nil
+	}
+	s := fmt.Sprintf(`
+$targetName = '%s'
+$target = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -ErrorAction SilentlyContinue
+if ($target) {
+  if (@($target.LunMappings).Count -gt 0) {
+    throw "cannot delete iSCSI target '$targetName' because it still has LUN mappings"
+  }
+  Remove-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -Confirm:$false -ErrorAction Stop | Out-Null
+  if (Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -ErrorAction SilentlyContinue) {
+    throw "failed to delete iSCSI target '$targetName'"
+  }
+}
+@{ ok = $true }
+`, escapePS(targetName))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }

@@ -560,6 +560,9 @@ func TestWinRMBackend_UnmapDiskFromTarget(t *testing.T) {
 			backend.psRunner = func(ctx context.Context, script string, out any) error {
 				assert.Contains(t, script, tt.targetIQN)
 				assert.Contains(t, script, tt.vhdxPath)
+				assert.Contains(t, script, "Remove-IscsiVirtualDiskTargetMapping")
+				assert.Contains(t, script, "-ErrorAction Stop")
+				assert.Contains(t, script, "failed to remove iSCSI target mapping")
 				return tt.psErr
 			}
 
@@ -568,6 +571,99 @@ func TestWinRMBackend_UnmapDiskFromTarget(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestWinRMBackend_DeleteTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetName string
+		psErr      error
+		wantErr    bool
+	}{
+		{
+			name:       "happy path",
+			targetName: "target-001",
+		},
+		{
+			name:       "error from PowerShell",
+			targetName: "target-002",
+			psErr:      errors.New("delete target failed"),
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := newUnitWinRMBackend()
+			backend.psRunner = func(ctx context.Context, script string, out any) error {
+				assert.Contains(t, script, tt.targetName)
+				assert.Contains(t, script, "Remove-IscsiServerTarget")
+				assert.Contains(t, script, "-Confirm:$false")
+				assert.Contains(t, script, "-ErrorAction Stop")
+				assert.Contains(t, script, "failed to delete iSCSI target")
+				return tt.psErr
+			}
+
+			err := backend.DeleteTarget(context.Background(), tt.targetName)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestWinRMBackend_LookupTargetNameByIQN(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetIQN  string
+		psOut      any
+		psErr      error
+		wantTarget string
+		wantErr    bool
+	}{
+		{
+			name:       "target found",
+			targetIQN:  "iqn.1991-05.com.microsoft:win-storage-test-volume",
+			psOut:      struct{ TargetName string }{TargetName: "test-volume"},
+			wantTarget: "test-volume",
+		},
+		{
+			name:      "target missing",
+			targetIQN: "iqn.1991-05.com.microsoft:missing",
+			psOut:     struct{ TargetName string }{},
+		},
+		{
+			name:      "error from PowerShell",
+			targetIQN: "iqn.1991-05.com.microsoft:error",
+			psErr:     errors.New("lookup failed"),
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := newUnitWinRMBackend()
+			backend.psRunner = func(ctx context.Context, script string, out any) error {
+				assert.Contains(t, script, tt.targetIQN)
+				assert.Contains(t, script, "Get-IscsiServerTarget")
+				assert.Contains(t, script, "TargetIqn")
+				if out != nil {
+					copyTestOutput(out, tt.psOut)
+				}
+				return tt.psErr
+			}
+
+			targetName, err := backend.LookupTargetNameByIQN(context.Background(), tt.targetIQN)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantTarget, targetName)
 			}
 		})
 	}
@@ -603,6 +699,9 @@ func TestWinRMBackend_DeleteVirtualDisk(t *testing.T) {
 			backend := newUnitWinRMBackend()
 			backend.psRunner = func(ctx context.Context, script string, out any) error {
 				assert.Contains(t, script, tt.vhdxPath)
+				assert.Contains(t, script, "Remove-IscsiVirtualDisk")
+				assert.Contains(t, script, "-ErrorAction Stop")
+				assert.Contains(t, script, "failed to delete iSCSI virtual disk file")
 				return tt.psErr
 			}
 

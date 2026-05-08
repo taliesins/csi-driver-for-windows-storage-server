@@ -79,8 +79,32 @@ func TestIscsiAdmWrappers(t *testing.T) {
 		assert.Equal(t, []string{"-m", "node", "-T", "iqn.2024-01.com.example:vol", "-p", "10.0.0.1:3260", "-u"}, (*calls)[0].args)
 	})
 
+	t.Run("logout ignores already absent session", func(t *testing.T) {
+		calls := captureExecWithTimeout(t, []string{"iscsiadm: No matching sessions found\n"}, []error{errors.New("exit status 21")})
+
+		require.NoError(t, Logout("iqn.2024-01.com.example:vol", "10.0.0.1:3260"))
+		require.Len(t, *calls, 1)
+		assert.Equal(t, []string{"-m", "node", "-T", "iqn.2024-01.com.example:vol", "-p", "10.0.0.1:3260", "-u"}, (*calls)[0].args)
+	})
+
+	t.Run("logout returns command errors", func(t *testing.T) {
+		captureExecWithTimeout(t, nil, []error{errors.New(`exec: "iscsiadm": executable file not found`)})
+
+		err := Logout("iqn.2024-01.com.example:vol", "10.0.0.1:3260")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "executable file not found")
+	})
+
 	t.Run("delete db entry", func(t *testing.T) {
 		calls := captureExecWithTimeout(t, nil, nil)
+
+		require.NoError(t, DeleteDBEntry("iqn.2024-01.com.example:vol"))
+		require.Len(t, *calls, 1)
+		assert.Equal(t, []string{"-m", "node", "-T", "iqn.2024-01.com.example:vol", "-o", "delete"}, (*calls)[0].args)
+	})
+
+	t.Run("delete db entry ignores already absent record", func(t *testing.T) {
+		calls := captureExecWithTimeout(t, []string{"iscsiadm: Could not execute operation on all records: encountered iSCSI database failure\n"}, []error{errors.New("exit status 21")})
 
 		require.NoError(t, DeleteDBEntry("iqn.2024-01.com.example:vol"))
 		require.Len(t, *calls, 1)

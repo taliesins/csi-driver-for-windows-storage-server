@@ -12,6 +12,8 @@ spec:
       env:
         - name: POSTGRES_PASSWORD
           value: example
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
       volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data

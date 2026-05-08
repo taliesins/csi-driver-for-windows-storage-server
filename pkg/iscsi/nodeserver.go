@@ -2,6 +2,8 @@ package iscsi
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +22,8 @@ import (
 // Mockable function references for testing
 var (
 	iscsilibConnect      = func(c *iscsilib.Connector) (string, error) { return c.Connect() }
+	iscsilibDisconnect   = func(c *iscsilib.Connector) error { return c.Disconnect() }
+	disconnectVolume     = func(c *iscsilib.Connector) error { return c.DisconnectVolume() }
 	getConnectorFromFile = iscsilib.GetConnectorFromFile
 	formatAndMount       = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
 		return m.FormatAndMount(source, target, fsType, options)
@@ -177,7 +181,94 @@ func (ns *nodeServer) waitForPath(path string, timeout time.Duration) error {
 }
 
 func stageConnectorFile(staging string) string {
+	staging = filepath.Clean(staging)
+	return filepath.Join(filepath.Dir(staging), "."+filepath.Base(staging)+".connector.json")
+}
+
+func legacyStageConnectorFile(staging string) string {
 	return filepath.Join(staging, "connector.json")
+}
+
+func getConnectorFromStaging(staging string, includeLegacy bool) (*iscsilib.Connector, string, error) {
+	paths := []string{stageConnectorFile(staging)}
+	if includeLegacy {
+		paths = append(paths, legacyStageConnectorFile(staging))
+	}
+	var lastErr error
+	for _, path := range paths {
+		conn, err := getConnectorFromFile(path)
+		if err == nil {
+			return conn, path, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, "", err
+		}
+		lastErr = err
+	}
+	return nil, "", lastErr
+}
+
+func getCleanupConnectorFromStaging(staging string, includeLegacy bool) (*iscsilib.Connector, string, error) {
+	paths := []string{stageConnectorFile(staging)}
+	if includeLegacy {
+		paths = append(paths, legacyStageConnectorFile(staging))
+	}
+	var lastErr error
+	for _, path := range paths {
+		conn, err := getConnectorFromFile(path)
+		if err == nil {
+			return conn, path, nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			lastErr = err
+			continue
+		}
+		if !isMissingMountTargetDevice(err) {
+			return nil, "", err
+		}
+		conn, staleErr := readPersistedConnector(path)
+		if staleErr != nil {
+			if errors.Is(staleErr, os.ErrNotExist) {
+				lastErr = staleErr
+				continue
+			}
+			return nil, "", staleErr
+		}
+		return conn, path, nil
+	}
+	return nil, "", lastErr
+}
+
+func readPersistedConnector(path string) (*iscsilib.Connector, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	conn := iscsilib.Connector{}
+	if err := json.Unmarshal(raw, &conn); err != nil {
+		return nil, err
+	}
+	if conn.MountTargetDevice == nil {
+		return nil, fmt.Errorf("mountTargetDevice in the connector is nil")
+	}
+	return &conn, nil
+}
+
+func isMissingMountTargetDevice(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "mounttargetdevice") && strings.Contains(msg, "not found")
+}
+
+func removeStagingConnectorFiles(staging string) error {
+	for _, path := range []string{stageConnectorFile(staging), legacyStageConnectorFile(staging)} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---------- CHAP secrets parsing (matches iscsiadm keys) ----------
@@ -493,8 +584,18 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		return nil, status.Errorf(codes.Internal, "iSCSI connect failed: %v", err)
 	}
 
-	// Persist the connector (used by publish/unpublish/unstage)
-	_ = conn.Persist(stageConnectorFile(req.GetStagingTargetPath()))
+	// Persist the connector beside the staging mount so filesystem mounts do not hide it.
+	connectorFile := stageConnectorFile(req.GetStagingTargetPath())
+	if err := os.MkdirAll(filepath.Dir(connectorFile), 0o755); err != nil {
+		return nil, status.Errorf(codes.Internal, "mkdir iSCSI connector directory: %v", err)
+	}
+	if err := conn.Persist(connectorFile); err != nil {
+		cleanupErr := errors.Join(disconnectVolume(conn), iscsilibDisconnect(conn))
+		if cleanupErr != nil {
+			return nil, status.Errorf(codes.Internal, "persist iSCSI connector: %v (rollback disconnect failed: %v)", err, cleanupErr)
+		}
+		return nil, status.Errorf(codes.Internal, "persist iSCSI connector: %v", err)
+	}
 
 	// Block: staging path just needs to exist
 	if req.GetVolumeCapability().GetBlock() != nil {
@@ -528,15 +629,53 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 		return nil, status.Error(codes.InvalidArgument, "stagingTargetPath missing")
 	}
 
-	// Unmount staging if present
-	if err := mount.CleanupMountPoint(req.GetStagingTargetPath(), ns.mounter, false); err != nil && !os.IsNotExist(err) {
-		return nil, status.Errorf(codes.Internal, "unstage cleanup failed: %v", err)
+	if err := ns.init(); err != nil {
+		return nil, status.Errorf(codes.Internal, "node server init failed: %v", err)
 	}
 
-	// Load connector and disconnect volume (multipath-aware)
-	if conn, err := getConnectorFromFile(stageConnectorFile(req.GetStagingTargetPath())); err == nil {
-		_ = conn.DisconnectVolume()
-		_ = os.Remove(stageConnectorFile(req.GetStagingTargetPath()))
+	staging := req.GetStagingTargetPath()
+	conn, _, err := getCleanupConnectorFromStaging(staging, false)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, status.Errorf(codes.Internal, "load iSCSI connector: %v", err)
+		}
+		conn = nil
+	}
+
+	notMnt, mountErr := ns.mounter.IsLikelyNotMountPoint(staging)
+	if mountErr != nil && !os.IsNotExist(mountErr) {
+		return nil, status.Errorf(codes.Internal, "check staging mount: %v", mountErr)
+	}
+	if mountErr == nil && !notMnt {
+		if err := ns.mounter.Unmount(staging); err != nil {
+			return nil, status.Errorf(codes.Internal, "unstage unmount failed: %v", err)
+		}
+	}
+
+	if conn == nil {
+		conn, _, err = getCleanupConnectorFromStaging(staging, true)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, status.Errorf(codes.Internal, "load iSCSI connector: %v", err)
+			}
+			conn = nil
+		}
+	}
+
+	if conn != nil {
+		if err := disconnectVolume(conn); err != nil {
+			return nil, status.Errorf(codes.Internal, "iSCSI disconnect volume failed: %v", err)
+		}
+		if err := iscsilibDisconnect(conn); err != nil {
+			return nil, status.Errorf(codes.Internal, "iSCSI logout failed: %v", err)
+		}
+		if err := removeStagingConnectorFiles(staging); err != nil {
+			return nil, status.Errorf(codes.Internal, "remove iSCSI connector file failed: %v", err)
+		}
+	}
+
+	if err := mount.CleanupMountPoint(staging, ns.mounter, false); err != nil && !os.IsNotExist(err) {
+		return nil, status.Errorf(codes.Internal, "unstage cleanup failed: %v", err)
 	}
 
 	return &csi.NodeUnstageVolumeResponse{}, nil
@@ -587,7 +726,7 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if staging == "" {
 			return nil, status.Error(codes.InvalidArgument, "stagingTargetPath is required for block to load connector")
 		}
-		conn, err := getConnectorFromFile(stageConnectorFile(staging))
+		conn, _, err := getConnectorFromStaging(staging, true)
 		if err != nil || conn == nil || conn.MountTargetDevice == nil {
 			// Fallback: compute the by-path and bind mount
 			device := filepath.Join("/dev/disk/by-path",
@@ -608,7 +747,10 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			return &csi.NodePublishVolumeResponse{}, nil
 		}
 
-		device := conn.MountTargetDevice.GetPath()
+		device := ""
+		if conn.MountTargetDevice != nil {
+			device = conn.MountTargetDevice.GetPath()
+		}
 		if err := ensureFile(req.GetTargetPath()); err != nil {
 			return nil, status.Errorf(codes.Internal, "create block target: %v", err)
 		}
@@ -629,18 +771,23 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	// Tolerate reboot recovery: if staging isn't mounted, recover using connector info.
 	notMnt, merr := ns.mounter.IsLikelyNotMountPoint(staging)
 	if merr == nil && notMnt {
-		if conn, err := getConnectorFromFile(stageConnectorFile(staging)); err == nil && conn != nil {
-			device := conn.MountTargetDevice.GetPath()
-			if device == "" {
-				device = filepath.Join("/dev/disk/by-path",
-					fmt.Sprintf("ip-%s-iscsi-%s-lun-%d", portal, iqn, lun))
-				if err := ns.waitForPath(device, 60*time.Second); err != nil {
-					return nil, status.Errorf(codes.Internal, "recover staging path: %v", err)
-				}
+		conn, _, err := getConnectorFromStaging(staging, true)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "staging recovery failed: %v", err)
+		}
+		if conn == nil {
+			return nil, status.Error(codes.Internal, "staging recovery failed: connector not found")
+		}
+		device := conn.MountTargetDevice.GetPath()
+		if device == "" {
+			device = filepath.Join("/dev/disk/by-path",
+				fmt.Sprintf("ip-%s-iscsi-%s-lun-%d", portal, iqn, lun))
+			if err := ns.waitForPath(device, 60*time.Second); err != nil {
+				return nil, status.Errorf(codes.Internal, "recover staging path: %v", err)
 			}
-			if err := formatAndMount(ns.mounter, device, staging, fsType, mountOpts); err != nil {
-				return nil, status.Errorf(codes.Internal, "format+mount staging fallback failed: %v", err)
-			}
+		}
+		if err := formatAndMount(ns.mounter, device, staging, fsType, mountOpts); err != nil {
+			return nil, status.Errorf(codes.Internal, "format+mount staging fallback failed: %v", err)
 		}
 	}
 	if err := os.MkdirAll(req.GetTargetPath(), 0o755); err != nil {

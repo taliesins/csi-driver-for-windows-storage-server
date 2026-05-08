@@ -125,6 +125,11 @@ func TestWinRMBackend_DeleteNfsShare(t *testing.T) {
 	backend.psRunner = func(ctx context.Context, script string, out any) error {
 		assert.Contains(t, script, "Remove-NfsShare")
 		assert.Contains(t, script, "-Confirm:$false")
+		assert.Contains(t, script, "-ErrorAction Stop")
+		assert.Contains(t, script, "failed to delete NFS share")
+		assert.Contains(t, script, "failed to delete NFS share path")
+		assert.Contains(t, script, "cannot delete NFS share path")
+		assert.Contains(t, script, "still mounted")
 		assert.NotContains(t, script, "Remove-NfsShare -Name $name -Force")
 		assert.Contains(t, script, "Remove-Item")
 		return nil
@@ -300,6 +305,11 @@ func TestWinRMBackend_DeleteSmbShare(t *testing.T) {
 	backend := newUnitWinRMBackend()
 	backend.psRunner = func(ctx context.Context, script string, out any) error {
 		assert.Contains(t, script, "Remove-SmbShare")
+		assert.Contains(t, script, "-ErrorAction Stop")
+		assert.Contains(t, script, "failed to delete SMB share")
+		assert.Contains(t, script, "failed to delete SMB share path")
+		assert.Contains(t, script, "cannot delete SMB share path")
+		assert.Contains(t, script, "still mounted")
 		assert.Contains(t, script, "Remove-Item")
 		return nil
 	}
@@ -391,6 +401,9 @@ func TestWinRMBackend_UnmountFileShareVirtualDisk(t *testing.T) {
 	backend.psRunner = func(ctx context.Context, script string, out any) error {
 		assert.Contains(t, script, "Dismount-CsiFileShareVirtualDisk")
 		assert.Contains(t, script, "Remove-PartitionAccessPath")
+		assert.Contains(t, script, "-ErrorAction Stop")
+		assert.Contains(t, script, "failed to remove partition access path")
+		assert.Contains(t, script, "failed to dismount file-share virtual disk")
 		assert.Contains(t, script, "D:\\vhdx\\share.vhdx")
 		assert.Contains(t, script, "D:\\shares\\share")
 		return nil

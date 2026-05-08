@@ -393,30 +393,28 @@ func (c *Connector) discoverTarget(targetIqn string, iFace string, portal string
 }
 
 // Disconnect is for backward-compatibility with c.Disconnect()
-func Disconnect(targetIqn string, targets []string) {
+func Disconnect(targetIqn string, targets []string) error {
+	var errs []error
 	for _, target := range targets {
-		targetPortal := strings.Split(target, ":")[0]
-		err := Logout(targetIqn, targetPortal)
-		if err != nil {
-			return
+		targetPortal := strings.TrimSpace(target)
+		if targetPortal == "" {
+			continue
+		}
+		if err := Logout(targetIqn, targetPortal); err != nil {
+			errs = append(errs, fmt.Errorf("logout from portal %s: %w", targetPortal, err))
 		}
 	}
 
-	deleted := map[string]bool{}
-	if _, ok := deleted[targetIqn]; ok {
-		return
+	if err := DeleteDBEntry(targetIqn); err != nil {
+		errs = append(errs, fmt.Errorf("delete iSCSI node db entry: %w", err))
 	}
-	deleted[targetIqn] = true
-	err := DeleteDBEntry(targetIqn)
-	if err != nil {
-		return
-	}
+	return errors.Join(errs...)
 }
 
 // Disconnect performs a disconnect operation from an appliance.
 // Be sure to disconnect all devices properly before doing this as it can result in data loss.
-func (c *Connector) Disconnect() {
-	Disconnect(c.TargetIqn, c.TargetPortals)
+func (c *Connector) Disconnect() error {
+	return Disconnect(c.TargetIqn, c.TargetPortals)
 }
 
 // DisconnectVolume removes a volume from a Linux host.
