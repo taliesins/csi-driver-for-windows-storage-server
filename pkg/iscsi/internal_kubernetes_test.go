@@ -47,6 +47,10 @@ func TestSecretRefForOperationExpandsTemplates(t *testing.T) {
 }
 
 func TestSecretDataForOperationDoesNotExposeValuesInReference(t *testing.T) {
+	params := map[string]string{
+		"csi.storage.k8s.io/provisioner-secret-name":      "iscsi-chap",
+		"csi.storage.k8s.io/provisioner-secret-namespace": "db",
+	}
 	client := fake.NewSimpleClientset(&v1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "iscsi-chap", Namespace: "db"},
 		Data: map[string][]byte{
@@ -55,10 +59,16 @@ func TestSecretDataForOperationDoesNotExposeValuesInReference(t *testing.T) {
 		},
 	})
 
-	data, err := secretDataForOperation(context.Background(), client, map[string]string{
-		"csi.storage.k8s.io/provisioner-secret-name":      "iscsi-chap",
-		"csi.storage.k8s.io/provisioner-secret-namespace": "db",
-	}, "provisioner", "db", "data", "pvc-123")
+	ref := secretRefForOperation(params, "provisioner", "db", "data", "pvc-123")
+	require.NotNil(t, ref)
+	assert.Equal(t, "iscsi-chap", ref.Name)
+	assert.Equal(t, "db", ref.Namespace)
+	assert.NotContains(t, ref.Name, "dbnode01")
+	assert.NotContains(t, ref.Name, "S3cret!P@ssw0rd")
+	assert.NotContains(t, ref.Namespace, "dbnode01")
+	assert.NotContains(t, ref.Namespace, "S3cret!P@ssw0rd")
+
+	data, err := secretDataForOperation(context.Background(), client, params, "provisioner", "db", "data", "pvc-123")
 	require.NoError(t, err)
 
 	assert.Equal(t, "dbnode01", data["node.session.auth.username"])
@@ -124,7 +134,7 @@ func TestReconcilePersistentVolumeClaimRollsBackBackendVolumeWhenPVCreateFails(t
 	pvc := internalTestPVC("data", "db", "claim-uid", "iscsi")
 	sc := internalTestStorageClass(d.name, "iscsi")
 	client := fake.NewSimpleClientset(sc, pvc)
-	client.Fake.PrependReactor("create", "persistentvolumes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	client.PrependReactor("create", "persistentvolumes", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, errors.New("api unavailable")
 	})
 
