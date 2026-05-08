@@ -209,11 +209,12 @@ func TestReconcileVolumeAttachmentPublishesAndSetsAttachedStatus(t *testing.T) {
 	_, d, backend := newTestConsolidatedControllerServer(t)
 	pv := internalTestBoundPV(t, d.name)
 	pvName := pv.Name
+	nodeID := "iqn.2004-10.com.ubuntu:01:test"
 	va := &storagev1.VolumeAttachment{
 		ObjectMeta: metav1.ObjectMeta{Name: "va-" + pv.Name},
 		Spec: storagev1.VolumeAttachmentSpec{
 			Attacher: d.name,
-			NodeName: "iqn.2004-10.com.ubuntu:01:test",
+			NodeName: "k8s",
 			Source: storagev1.VolumeAttachmentSource{
 				PersistentVolumeName: &pvName,
 			},
@@ -226,10 +227,10 @@ func TestReconcileVolumeAttachmentPublishesAndSetsAttachedStatus(t *testing.T) {
 		return nil
 	}
 
-	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t, pv), va)
+	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t, pv), internalTestCSINodeLister(t, internalTestCSINode(d.name, "k8s", nodeID)), va)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"iqn.2004-10.com.ubuntu:01:test"}, allowedInitiators)
+	assert.Equal(t, []string{nodeID}, allowedInitiators)
 	updated, err := client.StorageV1().VolumeAttachments().Get(context.Background(), va.Name, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, updated.Finalizers, vaProtectionFinalizer)
@@ -241,6 +242,7 @@ func TestReconcileVolumeAttachmentUnpublishesAndRemovesFinalizer(t *testing.T) {
 	_, d, backend := newTestConsolidatedControllerServer(t)
 	pv := internalTestBoundPV(t, d.name)
 	pvName := pv.Name
+	nodeID := "iqn.2004-10.com.ubuntu:01:test"
 	now := metav1.Now()
 	va := &storagev1.VolumeAttachment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -250,7 +252,7 @@ func TestReconcileVolumeAttachmentUnpublishesAndRemovesFinalizer(t *testing.T) {
 		},
 		Spec: storagev1.VolumeAttachmentSpec{
 			Attacher: d.name,
-			NodeName: "iqn.2004-10.com.ubuntu:01:test",
+			NodeName: "k8s",
 			Source: storagev1.VolumeAttachmentSource{
 				PersistentVolumeName: &pvName,
 			},
@@ -264,13 +266,37 @@ func TestReconcileVolumeAttachmentUnpublishesAndRemovesFinalizer(t *testing.T) {
 		return nil
 	}
 
-	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t, pv), va)
+	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t, pv), internalTestCSINodeLister(t, internalTestCSINode(d.name, "k8s", nodeID)), va)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"iqn.2004-10.com.ubuntu:01:test"}, deniedInitiators)
+	assert.Equal(t, []string{nodeID}, deniedInitiators)
 	updated, err := client.StorageV1().VolumeAttachments().Get(context.Background(), va.Name, metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.NotContains(t, updated.Finalizers, vaProtectionFinalizer)
+}
+
+func TestReconcileVolumeAttachmentSkipsMissingPersistentVolume(t *testing.T) {
+	_, d, backend := newTestConsolidatedControllerServer(t)
+	pvName := "pvc-missing"
+	va := &storagev1.VolumeAttachment{
+		ObjectMeta: metav1.ObjectMeta{Name: "va-missing-pv"},
+		Spec: storagev1.VolumeAttachmentSpec{
+			Attacher: d.name,
+			NodeName: "k8s",
+			Source: storagev1.VolumeAttachmentSource{
+				PersistentVolumeName: &pvName,
+			},
+		},
+	}
+	client := fake.NewSimpleClientset(va)
+	backend.allowInitiatorFn = func(ctx context.Context, targetName, initiatorIQN string) error {
+		t.Fatalf("ControllerPublishVolume should not run when the PersistentVolume is gone")
+		return nil
+	}
+
+	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t), internalTestCSINodeLister(t, internalTestCSINode(d.name, "k8s", "iqn.2004-10.com.ubuntu:01:test")), va)
+
+	require.NoError(t, err)
 }
 
 func TestReconcilePersistentVolumeClaimRejectsVolumeSnapshotDataSource(t *testing.T) {
@@ -344,6 +370,29 @@ func internalTestVolumeAttachmentLister(t *testing.T, vas ...*storagev1.VolumeAt
 		require.NoError(t, indexer.Add(va))
 	}
 	return storagelisters.NewVolumeAttachmentLister(indexer)
+}
+
+func internalTestCSINodeLister(t *testing.T, nodes ...*storagev1.CSINode) storagelisters.CSINodeLister {
+	t.Helper()
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, node := range nodes {
+		require.NoError(t, indexer.Add(node))
+	}
+	return storagelisters.NewCSINodeLister(indexer)
+}
+
+func internalTestCSINode(driverName, nodeName, nodeID string) *storagev1.CSINode {
+	return &storagev1.CSINode{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Spec: storagev1.CSINodeSpec{
+			Drivers: []storagev1.CSINodeDriver{
+				{
+					Name:   driverName,
+					NodeID: nodeID,
+				},
+			},
+		},
+	}
 }
 
 func internalTestStorageClass(driverName, name string) *storagev1.StorageClass {
