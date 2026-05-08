@@ -384,12 +384,18 @@ if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -Erro
 
 func (b *WinRMBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) error {
 	s := fmt.Sprintf(`
-if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -ErrorAction SilentlyContinue) {
-  Remove-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s' -ErrorAction SilentlyContinue
+$path = '%s'
+if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path -ErrorAction SilentlyContinue) {
+  Remove-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path -ErrorAction Stop
 }
-if (Test-Path -LiteralPath '%s') { Remove-Item -LiteralPath '%s' -Force -ErrorAction SilentlyContinue }
+if (Test-Path -LiteralPath $path) {
+  Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+}
+if (Test-Path -LiteralPath $path) {
+  throw "failed to delete iSCSI virtual disk file '$path'"
+}
 @{ ok = $true }
-`, escapePS(vhdxPath), escapePS(vhdxPath), escapePS(vhdxPath), escapePS(vhdxPath))
+`, escapePS(vhdxPath))
 	var out map[string]any
 	return b.runPS(ctx, s, &out)
 }

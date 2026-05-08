@@ -603,6 +603,9 @@ func TestWinRMBackend_DeleteVirtualDisk(t *testing.T) {
 			backend := newUnitWinRMBackend()
 			backend.psRunner = func(ctx context.Context, script string, out any) error {
 				assert.Contains(t, script, tt.vhdxPath)
+				assert.Contains(t, script, "Remove-IscsiVirtualDisk")
+				assert.Contains(t, script, "-ErrorAction Stop")
+				assert.Contains(t, script, "failed to delete iSCSI virtual disk file")
 				return tt.psErr
 			}
 

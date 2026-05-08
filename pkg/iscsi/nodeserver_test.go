@@ -48,7 +48,7 @@ func (m *mockMount) IsMountPoint(file string) (bool, error) {
 			return false, err
 		}
 	}
-	return true, nil
+	return containsString(m.mountPaths, file), nil
 }
 
 func (m *mockMount) IsLikelyNotMountPoint(file string) (bool, error) {
@@ -57,7 +57,7 @@ func (m *mockMount) IsLikelyNotMountPoint(file string) (bool, error) {
 			return false, err
 		}
 	}
-	return true, nil
+	return !containsString(m.mountPaths, file), nil
 }
 
 func (m *mockMount) CanSafelySkipMountPointCheck() bool {
@@ -88,7 +88,22 @@ func (m *mockMount) MountSensitiveWithoutSystemdWithMountFlags(source, target, f
 
 func (m *mockMount) Unmount(target string) error {
 	m.unmountPaths = append(m.unmountPaths, target)
+	for i, path := range m.mountPaths {
+		if path == target {
+			m.mountPaths = append(m.mountPaths[:i], m.mountPaths[i+1:]...)
+			break
+		}
+	}
 	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +154,13 @@ func TestNodeStageVolume_VolumeCapabilityRequired(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "volumeCapability missing")
+}
+
+func TestStageConnectorFileIsOutsideStagingMount(t *testing.T) {
+	stagingTargetPath := filepath.Join(t.TempDir(), "globalmount")
+
+	assert.Equal(t, filepath.Dir(stagingTargetPath), filepath.Dir(stageConnectorFile(stagingTargetPath)))
+	assert.NotEqual(t, legacyStageConnectorFile(stagingTargetPath), stageConnectorFile(stagingTargetPath))
 }
 
 func TestNodeStageVolume_IscsiConnectionRequired(t *testing.T) {
@@ -612,6 +634,131 @@ func TestNodeUnstageVolume_Success(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
+}
+
+func TestNodeUnstageVolume_DisconnectsISCSISession(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	mockMount.mountPaths = []string{stagingTargetPath}
+	conn := &iscsilib.Connector{
+		TargetIqn:     "iqn.2024-01.com.example:test-volume",
+		TargetPortals: []string{"10.0.0.1:3260"},
+	}
+
+	originalGetConnector := getConnectorFromFile
+	originalDisconnectVolume := disconnectVolume
+	originalDisconnect := iscsilibDisconnect
+	calls := []string{}
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		assert.Equal(t, stageConnectorFile(stagingTargetPath), filePath)
+		return conn, nil
+	}
+	disconnectVolume = func(got *iscsilib.Connector) error {
+		assert.Same(t, conn, got)
+		assert.Equal(t, []string{stagingTargetPath}, mockMount.unmountPaths)
+		calls = append(calls, "device")
+		return nil
+	}
+	iscsilibDisconnect = func(got *iscsilib.Connector) error {
+		assert.Same(t, conn, got)
+		calls = append(calls, "session")
+		return nil
+	}
+	t.Cleanup(func() {
+		getConnectorFromFile = originalGetConnector
+		disconnectVolume = originalDisconnectVolume
+		iscsilibDisconnect = originalDisconnect
+	})
+
+	resp, err := ns.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, []string{"device", "session"}, calls)
+}
+
+func TestNodeUnstageVolume_ReadsLegacyConnectorAfterUnmount(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	mockMount.mountPaths = []string{stagingTargetPath}
+	require.NoError(t, os.WriteFile(legacyStageConnectorFile(stagingTargetPath), []byte(`{
+  "target_iqn": "iqn.2024-01.com.example:test-volume",
+  "target_portal": ["10.0.0.1:3260"],
+  "mount_target_device": {"name": "sdb", "type": "disk"},
+  "devices": [{"name": "sdb", "type": "disk"}]
+}`), 0o600))
+
+	originalGetConnector := getConnectorFromFile
+	originalDisconnectVolume := disconnectVolume
+	originalDisconnect := iscsilibDisconnect
+	var disconnected bool
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		if filePath == legacyStageConnectorFile(stagingTargetPath) && len(mockMount.unmountPaths) > 0 {
+			return &iscsilib.Connector{
+				TargetIqn:     "iqn.2024-01.com.example:test-volume",
+				TargetPortals: []string{"10.0.0.1:3260"},
+			}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	disconnectVolume = func(got *iscsilib.Connector) error {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", got.TargetIqn)
+		disconnected = true
+		return nil
+	}
+	iscsilibDisconnect = func(got *iscsilib.Connector) error {
+		assert.True(t, disconnected)
+		return nil
+	}
+	t.Cleanup(func() {
+		getConnectorFromFile = originalGetConnector
+		disconnectVolume = originalDisconnectVolume
+		iscsilibDisconnect = originalDisconnect
+	})
+
+	resp, err := ns.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.True(t, disconnected)
+	assert.NoFileExists(t, legacyStageConnectorFile(stagingTargetPath))
+}
+
+func TestNodeUnstageVolume_ReturnsErrorWhenSessionDisconnectFails(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	originalGetConnector := getConnectorFromFile
+	originalDisconnectVolume := disconnectVolume
+	originalDisconnect := iscsilibDisconnect
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		return &iscsilib.Connector{}, nil
+	}
+	disconnectVolume = func(got *iscsilib.Connector) error {
+		return nil
+	}
+	iscsilibDisconnect = func(got *iscsilib.Connector) error {
+		return errors.New("logout failed")
+	}
+	t.Cleanup(func() {
+		getConnectorFromFile = originalGetConnector
+		disconnectVolume = originalDisconnectVolume
+		iscsilibDisconnect = originalDisconnect
+	})
+
+	_, err := ns.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "iSCSI logout failed")
 }
 
 // ---------------------------------------------------------------------------

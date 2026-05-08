@@ -1458,6 +1458,45 @@ func TestDeleteVolume_UsesTargetNameWhenPresent(t *testing.T) {
 	assert.NotNil(t, resp)
 }
 
+func TestDeleteVolume_ReturnsErrorWhenUnmapFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.unmapDiskFromTargetFn = func(ctx context.Context, targetName, vhdxPath string) error {
+		return errors.New("node session still attached")
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		t.Fatal("DeleteVirtualDisk should not be called after UnmapDiskFromTarget fails")
+		return nil
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: newTestVolumeID(t),
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "UnmapDiskFromTarget")
+}
+
+func TestDeleteVolume_ReturnsErrorWhenDeleteVirtualDiskFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.unmapDiskFromTargetFn = func(ctx context.Context, targetName, vhdxPath string) error {
+		return nil
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		return errors.New("file is still in use")
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: newTestVolumeID(t),
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "DeleteVirtualDisk")
+}
+
 func TestDeleteVolume_NFS(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 	vid := EncodeVolumeID(&VolumeID{Name: "nfs-vol", Protocol: ProtocolNFS, NfsServer: "10.0.0.2", NfsExportPath: "/nfs-vol"})
@@ -1740,6 +1779,23 @@ func TestControllerUnpublishVolume_UsesTargetNameWhenPresent(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
+}
+
+func TestControllerUnpublishVolume_ReturnsErrorWhenDenyInitiatorFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.denyInitiatorFn = func(ctx context.Context, targetName, initiatorIQN string) error {
+		return errors.New("deny failed")
+	}
+
+	resp, err := cs.ControllerUnpublishVolume(context.Background(), &csi.ControllerUnpublishVolumeRequest{
+		VolumeId: newTestVolumeIDWithTargetName(t),
+		NodeId:   "iqn.2024-01.com.example:node-001",
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "DenyInitiator")
 }
 
 // ---------------------------------------------------------------------------

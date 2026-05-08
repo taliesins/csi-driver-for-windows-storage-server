@@ -1471,15 +1471,16 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		}
 		return &csi.DeleteVolumeResponse{}, nil
 	}
-	// best-effort unmap + delete
+	// Unmap before deleting the backing VHDX. Returning errors keeps the PV
+	// finalizer retrying if a node still has the iSCSI session attached.
 	if targetName := targetNameFromVolID(id); targetName != "" && id.VHDXPath != "" {
 		if err := cs.Driver.backend.UnmapDiskFromTarget(ctx, targetName, id.VHDXPath); err != nil {
-			klog.Warningf("UnmapDiskFromTarget: %v", err)
+			return nil, status.Errorf(codes.Internal, "UnmapDiskFromTarget: %v", err)
 		}
 	}
 	if id.VHDXPath != "" {
 		if err := cs.Driver.backend.DeleteVirtualDisk(ctx, id.VHDXPath); err != nil {
-			klog.Warningf("DeleteVirtualDisk: %v", err)
+			return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
 		}
 	}
 	return &csi.DeleteVolumeResponse{}, nil
@@ -1549,7 +1550,7 @@ func (cs *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 	}
 	if targetName := targetNameFromVolID(id); targetName != "" {
 		if err := cs.Driver.backend.DenyInitiator(ctx, targetName, req.GetNodeId()); err != nil {
-			klog.Warningf("DenyInitiator: %v", err)
+			return nil, status.Errorf(codes.Internal, "DenyInitiator: %v", err)
 		}
 	} else {
 		klog.Warningf("DenyInitiator: volume_id is missing target name")
