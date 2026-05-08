@@ -114,15 +114,17 @@ type SmbShareOptions struct {
 }
 
 type driver struct {
-	name             string
-	protocol         Protocol
-	fileShareBackend string
-	mode             DriverMode
-	nodeID           string
-	version          string
-	endpoint         string
-	cap              []*csi.VolumeCapability_AccessMode
-	cscap            []*csi.ControllerServiceCapability
+	name               string
+	protocol           Protocol
+	fileShareBackend   string
+	mode               DriverMode
+	nodeID             string
+	version            string
+	endpoint           string
+	debug              bool
+	internalKubernetes InternalKubernetesConfig
+	cap                []*csi.VolumeCapability_AccessMode
+	cscap              []*csi.ControllerServiceCapability
 
 	backend Backend // <-- wired for controllerserver.go to use
 }
@@ -139,8 +141,10 @@ const (
 )
 
 type RunOptions struct {
-	Mode           DriverMode
-	LeaderElection LeaderElectionConfig
+	Mode               DriverMode
+	Debug              bool
+	InternalKubernetes InternalKubernetesConfig
+	LeaderElection     LeaderElectionConfig
 }
 
 type LeaderElectionConfig struct {
@@ -285,6 +289,14 @@ func (d *driver) Run(mode DriverMode) {
 func (d *driver) RunWithOptions(opts RunOptions) {
 	d.ensureRunDirectory()
 	d.mode = opts.Mode
+	d.debug = opts.Debug
+	d.internalKubernetes = opts.InternalKubernetes
+	if d.debug {
+		klog.Infof("debug action logging enabled for driver %s in %s mode", d.name, opts.Mode)
+	}
+	if d.internalKubernetes.Enabled {
+		klog.Infof("built-in Kubernetes CSI controllers enabled for driver %s in %s mode", d.name, opts.Mode)
+	}
 
 	if opts.LeaderElection.Enabled && opts.Mode != DriverModeController {
 		klog.Fatalf("leader election is only supported in controller mode")
@@ -320,9 +332,19 @@ func (d *driver) serveController(ctx context.Context) {
 	if err != nil {
 		klog.Fatalf("failed to init WinRM backend: %v", err)
 	}
+	if wb, ok := b.(*WinRMBackend); ok {
+		wb.Debug = d.debug
+		if d.debug {
+			klog.Infof("controller debug: WinRM backend configured user: endpoint=%s user=%q", wb.endpointURL(), wb.User)
+		}
+	}
 	klog.Infof("validating WinRM backend configuration")
 	if err := validateBackendForRun(ctx, b); err != nil {
 		klog.Fatalf("failed to validate WinRM backend: %v", err)
+	}
+	if d.debug {
+		klog.Infof("wrapping controller backend with debug action logger")
+		b = wrapBackendForDebug(b)
 	}
 	d.backend = b
 
@@ -331,6 +353,7 @@ func (d *driver) serveController(ctx context.Context) {
 		NewDefaultIdentityServer(d),
 		NewControllerServer(d),
 		nil)
+	d.startInternalKubernetes(ctx)
 	waitForServerContext(ctx, s)
 }
 
@@ -340,6 +363,7 @@ func (d *driver) serveNode(ctx context.Context) {
 		NewDefaultIdentityServer(d),
 		nil,
 		NewNodeServer(d))
+	d.startInternalKubernetes(ctx)
 	waitForServerContext(ctx, s)
 }
 
@@ -472,5 +496,6 @@ func newWinRMBackendFromEnv() (Backend, error) {
 	if imp := strings.TrimSpace(os.Getenv("WINRM_PS_IMPORT")); imp != "" {
 		b.PSModuleImport = imp
 	}
+	klog.Infof("WinRM backend configured: endpoint=%s auth=%s tls=%t insecure=%t timeout=%s psImportConfigured=%t", b.endpointURL(), auth, useTLS, insecure, timeout, strings.TrimSpace(b.PSModuleImport) != "")
 	return b, nil
 }

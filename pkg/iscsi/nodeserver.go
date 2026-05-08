@@ -15,6 +15,7 @@ import (
 	iscsilib "github.com/taliesins/csi-driver-for-windows-storage-server/pkg/iscsilib"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	klog "k8s.io/klog/v2"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
 )
@@ -28,11 +29,17 @@ var (
 	formatAndMount       = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
 		return m.FormatAndMount(source, target, fsType, options)
 	}
-	iscsilibExpandVolume = func(m mount.Interface, resizer iscsilib.Resizer, volumePath string) error {
+	formatAndMountSensitive = func(m *mount.SafeFormatAndMount, source, target, fsType string, options, sensitiveOptions []string) error {
+		return m.FormatAndMountSensitive(source, target, fsType, options, sensitiveOptions)
+	}
+	verifyStagedFilesystem = waitForStagedFilesystemReady
+	iscsilibExpandVolume   = func(m mount.Interface, resizer iscsilib.Resizer, volumePath string) error {
 		return iscsilib.ExpandVolume(m, resizer, volumePath)
 	}
-	fsUsageFunc           = fsUsage
-	nodePublishDeviceWait = 60 * time.Second
+	fsUsageFunc                = fsUsage
+	nodePublishDeviceWait      = 60 * time.Second
+	stagedFilesystemReadyWait  = 10 * time.Second
+	stagedFilesystemProbeDelay = 500 * time.Millisecond
 )
 
 type nodeServer struct {
@@ -41,6 +48,19 @@ type nodeServer struct {
 	exec    utilexec.Interface
 	resizer *mount.ResizeFs // keep as-is per your current code
 	csi.UnimplementedNodeServer
+}
+
+func (ns *nodeServer) nodeID() string {
+	if ns == nil || ns.Driver == nil {
+		return ""
+	}
+	return ns.Driver.nodeID
+}
+
+func (ns *nodeServer) debugf(format string, args ...any) {
+	if ns != nil && ns.Driver != nil && ns.Driver.debug {
+		klog.Infof("node debug: "+format, args...)
+	}
 }
 
 // ---------- init / small helpers ----------
@@ -103,6 +123,91 @@ func appendMountOptions(opts []string, raw string) []string {
 		}
 	}
 	return opts
+}
+
+func splitSensitiveMountOptions(opts []string) ([]string, []string) {
+	var normal, sensitive []string
+	for _, opt := range opts {
+		trimmed := strings.TrimSpace(opt)
+		if trimmed == "" {
+			continue
+		}
+		if isSensitiveMountOption(trimmed) {
+			sensitive = append(sensitive, trimmed)
+			continue
+		}
+		normal = append(normal, trimmed)
+	}
+	return normal, sensitive
+}
+
+func isSensitiveMountOption(opt string) bool {
+	key, _, ok := strings.Cut(strings.ToLower(strings.TrimSpace(opt)), "=")
+	if !ok {
+		return false
+	}
+	switch strings.TrimSpace(key) {
+	case "password", "pass", "credentials", "credential":
+		return true
+	default:
+		return false
+	}
+}
+
+func mountPrepared(m *mount.SafeFormatAndMount, source, target, fsType string, opts, sensitiveOpts []string) error {
+	if len(sensitiveOpts) > 0 {
+		return m.MountSensitive(source, target, fsType, opts, sensitiveOpts)
+	}
+	return m.Mount(source, target, fsType, opts)
+}
+
+func formatAndMountPrepared(m *mount.SafeFormatAndMount, source, target, fsType string, opts, sensitiveOpts []string) error {
+	if len(sensitiveOpts) > 0 {
+		return formatAndMountSensitive(m, source, target, fsType, opts, sensitiveOpts)
+	}
+	return formatAndMount(m, source, target, fsType, opts)
+}
+
+func mountOptionsReadOnly(opts []string) bool {
+	for _, opt := range opts {
+		switch strings.ToLower(strings.TrimSpace(opt)) {
+		case "ro", "readonly":
+			return true
+		}
+	}
+	return false
+}
+
+func waitForStagedFilesystemReady(path string, opts []string, timeout time.Duration) error {
+	if mountOptionsReadOnly(opts) {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if err := probeWritablePath(path); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for writable filesystem at %s: %w", path, lastErr)
+		}
+		time.Sleep(stagedFilesystemProbeDelay)
+	}
+}
+
+func probeWritablePath(path string) error {
+	probePath := filepath.Join(path, fmt.Sprintf(".csi-ready-%d", time.Now().UnixNano()))
+	f, err := os.OpenFile(probePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.Write([]byte("ok\n"))
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	removeErr := os.Remove(probePath)
+	return errors.Join(writeErr, syncErr, closeErr, removeErr)
 }
 
 func iscsiConnectionFromContexts(volumeID string, contexts ...map[string]string) (portal, iqn string, lun int, err error) {
@@ -497,6 +602,7 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 		fsType = "cifs"
 	}
 	opts := append(mountOptionsFromCapability(req.GetVolumeCapability()), mountOptionsFromContext(vc)...)
+	var sensitiveOpts []string
 	switch proto {
 	case ProtocolNFS:
 		if version, ok := getStr(vc, "nfsVersion"); ok {
@@ -517,7 +623,7 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 			opts = appendOptionIfMissing(opts, "username=", "username="+username)
 		}
 		if password, ok := firstSecretValue(req.GetSecrets(), "smbPassword", "password"); ok {
-			opts = appendOptionIfMissing(opts, "password=", "password="+password)
+			sensitiveOpts = appendOptionIfMissing(sensitiveOpts, "password=", "password="+password)
 		}
 		if domain, ok := firstSecretValue(req.GetSecrets(), "smbDomain", "domain"); ok {
 			opts = appendOptionIfMissing(opts, "domain=", "domain="+domain)
@@ -528,6 +634,8 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 			}
 		}
 	}
+	opts, extractedSensitiveOpts := splitSensitiveMountOptions(opts)
+	sensitiveOpts = append(extractedSensitiveOpts, sensitiveOpts...)
 	if err := os.MkdirAll(req.GetStagingTargetPath(), 0o755); err != nil {
 		return nil, status.Errorf(codes.Internal, "mkdir staging: %v", err)
 	}
@@ -536,9 +644,14 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 		return nil, status.Errorf(codes.Internal, "check staging mount: %v", merr)
 	}
 	if notMnt {
-		if err := ns.mounter.Mount(source, req.GetStagingTargetPath(), fsType, opts); err != nil {
+		klog.Infof("NodeStageVolume: mounting file-share volume: node=%q protocol=%s source=%q stagingTargetPath=%q fsType=%q options=%q", ns.nodeID(), proto, source, req.GetStagingTargetPath(), fsType, sanitizeMountOptionsForLog(opts))
+		ns.debugf("NodeStageVolume file-share mount options: node=%q protocol=%s source=%q stagingTargetPath=%q fsType=%q options=%q", ns.nodeID(), proto, source, req.GetStagingTargetPath(), fsType, sanitizeMountOptionsForDebugLog(opts))
+		if err := mountPrepared(ns.mounter, source, req.GetStagingTargetPath(), fsType, opts, sensitiveOpts); err != nil {
 			return nil, status.Errorf(codes.Internal, "mount %s volume: %v", proto, err)
 		}
+		klog.Infof("NodeStageVolume: file-share volume mounted: node=%q protocol=%s source=%q stagingTargetPath=%q", ns.nodeID(), proto, source, req.GetStagingTargetPath())
+	} else {
+		klog.Infof("NodeStageVolume: file-share staging path already mounted: node=%q protocol=%s source=%q stagingTargetPath=%q", ns.nodeID(), proto, source, req.GetStagingTargetPath())
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }
@@ -563,6 +676,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	if err != nil {
 		return nil, err
 	}
+	klog.Infof("NodeStageVolume: connecting iSCSI volume: node=%q targetPortal=%q targetIQN=%q lun=%d stagingTargetPath=%q fsType=%q options=%q", ns.nodeID(), portal, iqn, lun, req.GetStagingTargetPath(), fsType, sanitizeMountOptionsForLog(mountOpts))
 
 	// Build connector and connect via iscsilib (handles discovery, CHAP, login, path wait)
 	conn := &iscsilib.Connector{
@@ -583,6 +697,7 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	if err != nil || device == "" {
 		return nil, status.Errorf(codes.Internal, "iSCSI connect failed: %v", err)
 	}
+	klog.Infof("NodeStageVolume: iSCSI volume connected: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q", ns.nodeID(), portal, iqn, lun, device)
 
 	// Persist the connector beside the staging mount so filesystem mounts do not hide it.
 	connectorFile := stageConnectorFile(req.GetStagingTargetPath())
@@ -613,10 +728,18 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	if err := os.MkdirAll(req.GetStagingTargetPath(), 0o755); err != nil {
 		return nil, status.Errorf(codes.Internal, "mkdir staging: %v", err)
 	}
+	normalMountOpts, sensitiveMountOpts := splitSensitiveMountOptions(mountOpts)
 	if notMnt {
-		if err := formatAndMount(ns.mounter, device, req.GetStagingTargetPath(), fsType, mountOpts); err != nil {
+		klog.Infof("NodeStageVolume: formatting/mounting iSCSI volume: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q stagingTargetPath=%q fsType=%q options=%q", ns.nodeID(), portal, iqn, lun, device, req.GetStagingTargetPath(), fsType, sanitizeMountOptionsForLog(normalMountOpts))
+		if err := formatAndMountPrepared(ns.mounter, device, req.GetStagingTargetPath(), fsType, normalMountOpts, sensitiveMountOpts); err != nil {
 			return nil, status.Errorf(codes.Internal, "format+mount staging failed: %v", err)
 		}
+		klog.Infof("NodeStageVolume: iSCSI volume staged: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q stagingTargetPath=%q", ns.nodeID(), portal, iqn, lun, device, req.GetStagingTargetPath())
+	} else {
+		klog.Infof("NodeStageVolume: iSCSI staging path already mounted: node=%q targetPortal=%q targetIQN=%q lun=%d stagingTargetPath=%q", ns.nodeID(), portal, iqn, lun, req.GetStagingTargetPath())
+	}
+	if err := verifyStagedFilesystem(req.GetStagingTargetPath(), normalMountOpts, stagedFilesystemReadyWait); err != nil {
+		return nil, status.Errorf(codes.Internal, "staging filesystem not ready: %v", err)
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }
@@ -647,9 +770,16 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 		return nil, status.Errorf(codes.Internal, "check staging mount: %v", mountErr)
 	}
 	if mountErr == nil && !notMnt {
+		targetIQN, targetPortals := "", []string(nil)
+		if conn != nil {
+			targetIQN = conn.TargetIqn
+			targetPortals = conn.TargetPortals
+		}
+		klog.Infof("NodeUnstageVolume: unmounting staging path: node=%q volumeID=%q targetIQN=%q targetPortals=%q stagingTargetPath=%q", ns.nodeID(), req.GetVolumeId(), targetIQN, targetPortals, staging)
 		if err := ns.mounter.Unmount(staging); err != nil {
 			return nil, status.Errorf(codes.Internal, "unstage unmount failed: %v", err)
 		}
+		klog.Infof("NodeUnstageVolume: staging path unmounted: node=%q volumeID=%q targetIQN=%q targetPortals=%q stagingTargetPath=%q", ns.nodeID(), req.GetVolumeId(), targetIQN, targetPortals, staging)
 	}
 
 	if conn == nil {
@@ -663,6 +793,7 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 	}
 
 	if conn != nil {
+		klog.Infof("NodeUnstageVolume: disconnecting iSCSI volume: node=%q volumeID=%q targetIQN=%q targetPortals=%q", ns.nodeID(), req.GetVolumeId(), conn.TargetIqn, conn.TargetPortals)
 		if err := disconnectVolume(conn); err != nil {
 			return nil, status.Errorf(codes.Internal, "iSCSI disconnect volume failed: %v", err)
 		}
@@ -672,11 +803,14 @@ func (ns *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 		if err := removeStagingConnectorFiles(staging); err != nil {
 			return nil, status.Errorf(codes.Internal, "remove iSCSI connector file failed: %v", err)
 		}
+		klog.Infof("NodeUnstageVolume: iSCSI volume disconnected: node=%q volumeID=%q targetIQN=%q targetPortals=%q", ns.nodeID(), req.GetVolumeId(), conn.TargetIqn, conn.TargetPortals)
 	}
 
+	klog.Infof("NodeUnstageVolume: cleaning staging path: node=%q volumeID=%q stagingTargetPath=%q", ns.nodeID(), req.GetVolumeId(), staging)
 	if err := mount.CleanupMountPoint(staging, ns.mounter, false); err != nil && !os.IsNotExist(err) {
 		return nil, status.Errorf(codes.Internal, "unstage cleanup failed: %v", err)
 	}
+	klog.Infof("NodeUnstageVolume: staging cleanup completed: node=%q volumeID=%q stagingTargetPath=%q", ns.nodeID(), req.GetVolumeId(), staging)
 
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
@@ -708,9 +842,11 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if req.GetReadonly() {
 			opts = append(opts, "ro")
 		}
-		if err := ns.mounter.Mount(staging, req.GetTargetPath(), "", opts); err != nil {
+		klog.Infof("NodePublishVolume: bind-mounting file-share volume: node=%q protocol=%s source=%q targetPath=%q readonly=%t options=%q", ns.nodeID(), proto, staging, req.GetTargetPath(), req.GetReadonly(), sanitizeMountOptionsForLog(opts))
+		if err := mountPrepared(ns.mounter, staging, req.GetTargetPath(), "", opts, nil); err != nil {
 			return nil, status.Errorf(codes.Internal, "bind-mount publish failed: %v", err)
 		}
+		klog.Infof("NodePublishVolume: file-share volume published: node=%q protocol=%s source=%q targetPath=%q", ns.nodeID(), proto, staging, req.GetTargetPath())
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -741,9 +877,12 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 			if ro {
 				opts = append(opts, "ro")
 			}
-			if err := ns.mounter.Mount(device, req.GetTargetPath(), "", opts); err != nil {
+			opts, sensitiveOpts := splitSensitiveMountOptions(opts)
+			klog.Infof("NodePublishVolume: bind-mounting iSCSI block volume: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q targetPath=%q readonly=%t options=%q", ns.nodeID(), portal, iqn, lun, device, req.GetTargetPath(), ro, sanitizeMountOptionsForLog(opts))
+			if err := mountPrepared(ns.mounter, device, req.GetTargetPath(), "", opts, sensitiveOpts); err != nil {
 				return nil, status.Errorf(codes.Internal, "bind-mount block device: %v", err)
 			}
+			klog.Infof("NodePublishVolume: iSCSI block volume published: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q targetPath=%q", ns.nodeID(), portal, iqn, lun, device, req.GetTargetPath())
 			return &csi.NodePublishVolumeResponse{}, nil
 		}
 
@@ -758,9 +897,12 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if ro {
 			opts = append(opts, "ro")
 		}
-		if err := ns.mounter.Mount(device, req.GetTargetPath(), "", opts); err != nil {
+		opts, sensitiveOpts := splitSensitiveMountOptions(opts)
+		klog.Infof("NodePublishVolume: bind-mounting iSCSI block volume: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q targetPath=%q readonly=%t options=%q", ns.nodeID(), portal, iqn, lun, device, req.GetTargetPath(), ro, sanitizeMountOptionsForLog(opts))
+		if err := mountPrepared(ns.mounter, device, req.GetTargetPath(), "", opts, sensitiveOpts); err != nil {
 			return nil, status.Errorf(codes.Internal, "bind-mount block device: %v", err)
 		}
+		klog.Infof("NodePublishVolume: iSCSI block volume published: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q targetPath=%q", ns.nodeID(), portal, iqn, lun, device, req.GetTargetPath())
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -786,9 +928,11 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 				return nil, status.Errorf(codes.Internal, "recover staging path: %v", err)
 			}
 		}
-		if err := formatAndMount(ns.mounter, device, staging, fsType, mountOpts); err != nil {
+		normalMountOpts, sensitiveMountOpts := splitSensitiveMountOptions(mountOpts)
+		if err := formatAndMountPrepared(ns.mounter, device, staging, fsType, normalMountOpts, sensitiveMountOpts); err != nil {
 			return nil, status.Errorf(codes.Internal, "format+mount staging fallback failed: %v", err)
 		}
+		klog.Infof("NodePublishVolume: recovered iSCSI staging mount: node=%q targetPortal=%q targetIQN=%q lun=%d device=%q stagingTargetPath=%q", ns.nodeID(), portal, iqn, lun, device, staging)
 	}
 	if err := os.MkdirAll(req.GetTargetPath(), 0o755); err != nil {
 		return nil, status.Errorf(codes.Internal, "mkdir target: %v", err)
@@ -797,9 +941,12 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 	if ro {
 		opts = append(opts, "ro")
 	}
-	if err := ns.mounter.Mount(staging, req.GetTargetPath(), "", opts); err != nil {
+	opts, sensitiveOpts := splitSensitiveMountOptions(opts)
+	klog.Infof("NodePublishVolume: bind-mounting iSCSI filesystem volume: node=%q targetPortal=%q targetIQN=%q lun=%d source=%q targetPath=%q readonly=%t options=%q", ns.nodeID(), portal, iqn, lun, staging, req.GetTargetPath(), ro, sanitizeMountOptionsForLog(opts))
+	if err := mountPrepared(ns.mounter, staging, req.GetTargetPath(), "", opts, sensitiveOpts); err != nil {
 		return nil, status.Errorf(codes.Internal, "bind-mount publish failed: %v", err)
 	}
+	klog.Infof("NodePublishVolume: iSCSI filesystem volume published: node=%q targetPortal=%q targetIQN=%q lun=%d source=%q targetPath=%q", ns.nodeID(), portal, iqn, lun, staging, req.GetTargetPath())
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
@@ -810,9 +957,11 @@ func (ns *nodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	if req.GetTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "targetPath missing")
 	}
+	klog.Infof("NodeUnpublishVolume: unmounting published volume: node=%q volumeID=%q targetPath=%q", ns.nodeID(), req.GetVolumeId(), req.GetTargetPath())
 	if err := mount.CleanupMountPoint(req.GetTargetPath(), ns.mounter, false); err != nil && !os.IsNotExist(err) {
 		return nil, status.Errorf(codes.Internal, "cleanup target mount: %v", err)
 	}
+	klog.Infof("NodeUnpublishVolume: published volume unmounted: node=%q volumeID=%q targetPath=%q", ns.nodeID(), req.GetVolumeId(), req.GetTargetPath())
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
@@ -904,9 +1053,11 @@ func (ns *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandV
 	}
 
 	// Moved into iscsilib: rescan iSCSI + resize multipath (if any) + grow filesystem
+	klog.Infof("NodeExpandVolume: expanding node filesystem: node=%q volumeID=%q volumePath=%q", ns.nodeID(), req.GetVolumeId(), req.GetVolumePath())
 	if err := iscsilibExpandVolume(ns.mounter.Interface, ns.resizer, req.GetVolumePath()); err != nil {
 		return nil, status.Errorf(codes.Internal, "expand failed: %v", err)
 	}
+	klog.Infof("NodeExpandVolume: node filesystem expanded: node=%q volumeID=%q volumePath=%q", ns.nodeID(), req.GetVolumeId(), req.GetVolumePath())
 
 	return &csi.NodeExpandVolumeResponse{}, nil
 }

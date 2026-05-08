@@ -1,9 +1,17 @@
 # -- Install only node-side resources. Use this for static, pre-provisioned volumes when no controller or WinRM Secret is needed.
 nodeOnly: false
 
+# -- Enable detailed driver action logging without logging secret values. Disabled by default; enable when troubleshooting.
+debug: false
+
+# -- Driver and built-in Kubernetes controller verbosity.
+logLevel: 2
+
 controller:
   # -- Number of controller replicas. Values greater than 1 enable leader election.
   replicas: 1
+  # -- HTTP port used by the controller liveness probe.
+  livenessPort: 29752
   leaderElection:
     # -- Kubernetes Lease duration used when controller.replicas is greater than 1.
     leaseDuration: 15s
@@ -44,24 +52,8 @@ drivers:
     attachRequired: true
     # -- Enable iSCSI host integration. When true, the node plugin reads the open-iscsi initiator from node.initiatorNamePath; set false for NFS/SMB-only installs.
     needsIscsi: true
-    # -- HTTP port used by the liveness probe sidecar.
+    # -- HTTP port used by the node liveness probe.
     livenessPort: 29753
-
-sidecars:
-  # -- Verbosity passed to CSI sidecars.
-  logLevel: 2
-  provisioner:
-    # -- CSI external-provisioner image.
-    image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
-  attacher:
-    # -- CSI external-attacher image.
-    image: registry.k8s.io/sig-storage/csi-attacher:v4.4.2
-  nodeDriverRegistrar:
-    # -- CSI node-driver-registrar image.
-    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0
-  livenessProbe:
-    # -- CSI livenessprobe image.
-    image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
 
 image:
   # -- Driver image repository.
@@ -76,7 +68,7 @@ nameOverride: ""
 # -- Override the fully qualified resource name.
 fullnameOverride: ""
 
-# -- Optional image pull secrets for the driver and sidecars.
+# -- Optional image pull secrets for the driver.
 imagePullSecrets: []
 
 winrm:

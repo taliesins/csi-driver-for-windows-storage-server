@@ -37,6 +37,13 @@ var (
 	nodeIDFile = flag.String("nodeid-file", os.Getenv("CSI_NODE_ID_FILE"), "file containing node id; supports InitiatorName=<iqn> files")
 	driverName = flag.String("drivername", os.Getenv("CSI_DRIVER_NAME"), "CSI driver name")
 	mode       = flag.String("mode", os.Getenv("CSI_DRIVER_MODE"), "driver mode: controller or node")
+	debug      = flag.Bool("debug", envBoolDefault("CSI_DEBUG", false), "enable detailed driver action logging without logging secret values")
+
+	kubernetesIntegration   = flag.Bool("kubernetes-integration", envBoolDefault("CSI_KUBERNETES_INTEGRATION", false), "run the built-in Kubernetes CSI provisioner, attacher, node registrar, and health components")
+	controllerPublish       = flag.Bool("controller-publish", envBoolDefault("CSI_CONTROLLER_PUBLISH", true), "run the built-in VolumeAttachment controller in controller mode")
+	livenessPort            = flag.Int("liveness-port", envIntDefault("CSI_LIVENESS_PORT", 0), "HTTP health port for the built-in liveness endpoint")
+	kubeletRegistrationPath = flag.String("kubelet-registration-path", os.Getenv("CSI_KUBELET_REGISTRATION_PATH"), "host kubelet plugin socket path advertised by the built-in node registrar")
+	kubernetesResyncPeriod  = flag.Duration("kubernetes-resync-period", envDurationDefault("CSI_KUBERNETES_RESYNC_PERIOD", 5*time.Second), "resync period for built-in Kubernetes controllers")
 
 	leaderElectionEnabled       = flag.Bool("leader-election", envBoolDefault("CSI_LEADER_ELECTION", false), "enable Kubernetes Lease leader election; controller mode only")
 	leaderElectionName          = flag.String("leader-election-name", os.Getenv("CSI_LEADER_ELECTION_NAME"), "Kubernetes Lease name")
@@ -76,7 +83,15 @@ func handle() {
 		d = iscsi.NewNamedDriver(*driverName, resolvedNodeID, *endpoint)
 	}
 	d.RunWithOptions(iscsi.RunOptions{
-		Mode: driverMode,
+		Mode:  driverMode,
+		Debug: *debug,
+		InternalKubernetes: iscsi.InternalKubernetesConfig{
+			Enabled:                 *kubernetesIntegration,
+			ControllerPublish:       *controllerPublish,
+			LivenessPort:            *livenessPort,
+			KubeletRegistrationPath: *kubeletRegistrationPath,
+			ResyncPeriod:            *kubernetesResyncPeriod,
+		},
 		LeaderElection: iscsi.LeaderElectionConfig{
 			Enabled:        *leaderElectionEnabled,
 			LeaseName:      *leaderElectionName,
@@ -151,6 +166,20 @@ func envBoolDefault(name string, fallback bool) bool {
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		klog.V(4).Infof("invalid boolean environment variable %s=%q: %v; using fallback %t", name, rawValue, err, fallback)
+		return fallback
+	}
+	return parsed
+}
+
+func envIntDefault(name string, fallback int) int {
+	rawValue := os.Getenv(name)
+	value := strings.TrimSpace(rawValue)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		klog.V(4).Infof("invalid integer environment variable %s=%q: %v; using fallback %d", name, rawValue, err, fallback)
 		return fallback
 	}
 	return parsed
