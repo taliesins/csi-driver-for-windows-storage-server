@@ -1,3 +1,12 @@
+## [1.3.1](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.3.0...v1.3.1) (2026-05-08)
+
+### Bug Fixes
+
+* Ensure delete occurs ([56b887c](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/56b887c63100a8f707c5c6689583fd3bf52d1f6b))
+* Ensure deletion occurs ([fc70252](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/fc70252693dc74b0ba306c9a4ab70f14e2ed736b))
+* Remove iSCSI volumes when required ([b6148f6](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/b6148f6e3bfab317eeb7fc768db7fb32b82b9080))
+* Support manual cleanup ([90cb58f](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/90cb58f3973d482edd8904f61d318c5faf99417e))
+
 ## [1.3.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.2.0...v1.3.0) (2026-05-07)
 
 ### Features
