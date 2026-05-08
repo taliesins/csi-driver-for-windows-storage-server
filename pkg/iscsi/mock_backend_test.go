@@ -65,6 +65,12 @@ func (m *MockBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) er
 	return args.Error(0)
 }
 
+// DeleteTarget mocks DeleteTarget.
+func (m *MockBackend) DeleteTarget(ctx context.Context, targetName string) error {
+	args := m.Called(ctx, targetName)
+	return args.Error(0)
+}
+
 // GetVolumeByName mocks GetVolumeByName.
 func (m *MockBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {
 	args := m.Called(ctx, name, parentDir)
@@ -235,6 +241,16 @@ func TestMockBackend_DeleteVirtualDisk(t *testing.T) {
 	m.On("DeleteVirtualDisk", mock.Anything, "D:\\vhdx\\test-vol.vhdx").Return(nil)
 
 	err := m.DeleteVirtualDisk(context.Background(), "D:\\vhdx\\test-vol.vhdx")
+	assert.NoError(t, err)
+
+	m.AssertExpectations(t)
+}
+
+func TestMockBackend_DeleteTarget(t *testing.T) {
+	m := new(MockBackend)
+	m.On("DeleteTarget", mock.Anything, "target-test").Return(nil)
+
+	err := m.DeleteTarget(context.Background(), "target-test")
 	assert.NoError(t, err)
 
 	m.AssertExpectations(t)

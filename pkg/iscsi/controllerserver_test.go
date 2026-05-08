@@ -21,6 +21,7 @@ type mockBackend struct {
 	mapDiskToTargetFn           func(ctx context.Context, targetName, vhdxPath string) (int32, error)
 	unmapDiskFromTargetFn       func(ctx context.Context, targetName, vhdxPath string) error
 	deleteVirtualDiskFn         func(ctx context.Context, vhdxPath string) error
+	deleteTargetFn              func(ctx context.Context, targetName string) error
 	getVolumeByNameFn           func(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error)
 	allowInitiatorFn            func(ctx context.Context, targetName, initiatorIQN string) error
 	denyInitiatorFn             func(ctx context.Context, targetName, initiatorIQN string) error
@@ -79,6 +80,12 @@ func (m *mockBackend) UnmapDiskFromTarget(ctx context.Context, targetName, vhdxP
 func (m *mockBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) error {
 	if m.deleteVirtualDiskFn != nil {
 		return m.deleteVirtualDiskFn(ctx, vhdxPath)
+	}
+	return nil
+}
+func (m *mockBackend) DeleteTarget(ctx context.Context, targetName string) error {
+	if m.deleteTargetFn != nil {
+		return m.deleteTargetFn(ctx, targetName)
 	}
 	return nil
 }
@@ -1497,6 +1504,29 @@ func TestDeleteVolume_ReturnsErrorWhenDeleteVirtualDiskFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "DeleteVirtualDisk")
 }
 
+func TestDeleteVolume_ReturnsErrorWhenDeleteTargetFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+
+	mockBackend.unmapDiskFromTargetFn = func(ctx context.Context, targetName, vhdxPath string) error {
+		return nil
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		return nil
+	}
+	mockBackend.deleteTargetFn = func(ctx context.Context, targetName string) error {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", targetName)
+		return errors.New("target still has initiators")
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: newTestVolumeID(t),
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "DeleteTarget")
+}
+
 func TestDeleteVolume_NFS(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServer(t)
 	vid := EncodeVolumeID(&VolumeID{Name: "nfs-vol", Protocol: ProtocolNFS, NfsServer: "10.0.0.2", NfsExportPath: "/nfs-vol"})
@@ -1508,6 +1538,20 @@ func TestDeleteVolume_NFS(t *testing.T) {
 	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
+}
+
+func TestDeleteVolume_NFSReturnsErrorWhenDeleteShareFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServer(t)
+	vid := EncodeVolumeID(&VolumeID{Name: "nfs-vol", Protocol: ProtocolNFS, SharePath: "D:\\shares\\nfs-vol", NfsServer: "10.0.0.2", NfsExportPath: "/nfs-vol"})
+	mockBackend.deleteNfsShareFn = func(ctx context.Context, name, path string) error {
+		return errors.New("remove nfs share failed")
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "DeleteNfsShare")
 }
 
 func TestDeleteVolume_VHDXBackedNFSUnmountsAndDeletes(t *testing.T) {
@@ -1548,6 +1592,35 @@ func TestDeleteVolume_VHDXBackedNFSUnmountsAndDeletes(t *testing.T) {
 	assert.True(t, deletedDisk)
 }
 
+func TestDeleteVolume_VHDXBackedNFSReturnsErrorWhenUnmountFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolNFS, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:          "nfs-vhdx",
+		Protocol:      ProtocolNFS,
+		ShareBackend:  fileShareBackendVHDX,
+		SharePath:     "D:\\shares\\nfs-vhdx",
+		NfsServer:     "10.0.0.2",
+		NfsExportPath: "/nfs-vhdx",
+		VHDXPath:      "D:\\nfs-vhdx\\nfs-vhdx.vhdx",
+	})
+	mockBackend.deleteNfsShareFn = func(ctx context.Context, name, path string) error {
+		return nil
+	}
+	mockBackend.unmountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		return errors.New("dismount failed")
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		t.Fatal("DeleteVirtualDisk should not be called after unmount fails")
+		return nil
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "UnmountFileShareVirtualDisk")
+}
+
 func TestDeleteVolume_VHDXBackedSMBUnmountsAndDeletes(t *testing.T) {
 	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolSMB, fileShareBackendVHDX)
 	vid := EncodeVolumeID(&VolumeID{
@@ -1584,6 +1657,48 @@ func TestDeleteVolume_VHDXBackedSMBUnmountsAndDeletes(t *testing.T) {
 	assert.True(t, deletedShare)
 	assert.True(t, unmounted)
 	assert.True(t, deletedDisk)
+}
+
+func TestDeleteVolume_SMBReturnsErrorWhenDeleteShareFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolSMB, fileShareBackendDirectory)
+	vid := EncodeVolumeID(&VolumeID{Name: "smb-vol", Protocol: ProtocolSMB, SharePath: "D:\\shares\\smb-vol", SmbServer: "10.0.0.3", SmbShareName: "smb-vol"})
+	mockBackend.deleteSmbShareFn = func(ctx context.Context, name, path string) error {
+		return errors.New("remove smb share failed")
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "DeleteSmbShare")
+}
+
+func TestDeleteVolume_VHDXBackedSMBReturnsErrorWhenDeleteDiskFails(t *testing.T) {
+	cs, _, mockBackend := newTestControllerServerForProtocolAndBackend(t, ProtocolSMB, fileShareBackendVHDX)
+	vid := EncodeVolumeID(&VolumeID{
+		Name:         "smb-vhdx",
+		Protocol:     ProtocolSMB,
+		ShareBackend: fileShareBackendVHDX,
+		SharePath:    "D:\\shares\\smb-vhdx",
+		SmbServer:    "10.0.0.3",
+		SmbShareName: "smb-vhdx",
+		VHDXPath:     "D:\\smb-vhdx\\smb-vhdx.vhdx",
+	})
+	mockBackend.deleteSmbShareFn = func(ctx context.Context, name, path string) error {
+		return nil
+	}
+	mockBackend.unmountFileShareVhdxFn = func(ctx context.Context, vhdxPath, mountPath string) error {
+		return nil
+	}
+	mockBackend.deleteVirtualDiskFn = func(ctx context.Context, vhdxPath string) error {
+		return errors.New("remove vhdx failed")
+	}
+
+	resp, err := cs.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: vid})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "DeleteVirtualDisk")
 }
 
 func TestControllerPublishVolume_SMB(t *testing.T) {

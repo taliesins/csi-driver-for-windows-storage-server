@@ -148,16 +148,28 @@ function Mount-CsiFileShareVirtualDisk([string]$VhdxPath, [string]$MountPath) {
   }
 }
 function Dismount-CsiFileShareVirtualDisk([string]$VhdxPath, [string]$MountPath) {
+  $accessPath = Get-CsiAccessPath $MountPath
   $partition = Get-CsiPartitionByAccessPath $MountPath
   if ($partition) {
-    Remove-PartitionAccessPath -DiskNumber $partition.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath (Get-CsiAccessPath $MountPath) -ErrorAction SilentlyContinue
+    Remove-PartitionAccessPath -DiskNumber $partition.DiskNumber -PartitionNumber $partition.PartitionNumber -AccessPath $accessPath -ErrorAction Stop
+    $partition = Get-Partition -DiskNumber $partition.DiskNumber -PartitionNumber $partition.PartitionNumber -ErrorAction SilentlyContinue
+    if ($partition -and @($partition.AccessPaths) -contains $accessPath) {
+      throw "failed to remove partition access path '$accessPath'"
+    }
   }
   $image = Get-DiskImage -ImagePath $VhdxPath -ErrorAction SilentlyContinue
   if ($image -and $image.Attached) {
-    Dismount-DiskImage -ImagePath $VhdxPath -ErrorAction SilentlyContinue
+    Dismount-DiskImage -ImagePath $VhdxPath -ErrorAction Stop
+    $image = Get-DiskImage -ImagePath $VhdxPath -ErrorAction SilentlyContinue
+    if ($image -and $image.Attached) {
+      throw "failed to dismount file-share virtual disk '$VhdxPath'"
+    }
   }
   if ($MountPath -and (Test-Path -LiteralPath $MountPath)) {
-    Remove-Item -LiteralPath $MountPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $MountPath -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $MountPath) {
+      throw "failed to delete file-share mount path '$MountPath'"
+    }
   }
 }
 `
@@ -303,12 +315,25 @@ if ($share -and -not $path) {
   $path = $share.Path
 }
 if ($share) {
-  Remove-NfsShare -Name $name -Confirm:$false -ErrorAction SilentlyContinue
+  Remove-NfsShare -Name $name -Confirm:$false -ErrorAction Stop
+  if (Get-NfsShare -Name $name -ErrorAction SilentlyContinue) {
+    throw "failed to delete NFS share '$name'"
+  }
 }
 if ($path -and (Test-Path -LiteralPath $path)) {
-  if (Get-Command Remove-FsrmQuota -ErrorAction SilentlyContinue) { Remove-FsrmQuota -Path $path -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }
+  if (Get-Command Remove-FsrmQuota -ErrorAction SilentlyContinue) {
+    if (Get-FsrmQuota -Path $path -ErrorAction SilentlyContinue) {
+      Remove-FsrmQuota -Path $path -Confirm:$false -ErrorAction Stop | Out-Null
+      if (Get-FsrmQuota -Path $path -ErrorAction SilentlyContinue) {
+        throw "failed to delete quota for NFS share path '$path'"
+      }
+    }
+  }
   if (-not (Test-CsiPartitionAccessPath $path)) {
-    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $path) {
+      throw "failed to delete NFS share path '$path'"
+    }
   }
 }
 @{ ok=$true }
@@ -406,12 +431,25 @@ if ($share -and -not $path) {
   $path = $share.Path
 }
 if ($share) {
-  Remove-SmbShare -Name $name -Force -ErrorAction SilentlyContinue
+  Remove-SmbShare -Name $name -Force -ErrorAction Stop
+  if (Get-SmbShare -Name $name -ErrorAction SilentlyContinue) {
+    throw "failed to delete SMB share '$name'"
+  }
 }
 if ($path -and (Test-Path -LiteralPath $path)) {
-  if (Get-Command Remove-FsrmQuota -ErrorAction SilentlyContinue) { Remove-FsrmQuota -Path $path -Confirm:$false -ErrorAction SilentlyContinue | Out-Null }
+  if (Get-Command Remove-FsrmQuota -ErrorAction SilentlyContinue) {
+    if (Get-FsrmQuota -Path $path -ErrorAction SilentlyContinue) {
+      Remove-FsrmQuota -Path $path -Confirm:$false -ErrorAction Stop | Out-Null
+      if (Get-FsrmQuota -Path $path -ErrorAction SilentlyContinue) {
+        throw "failed to delete quota for SMB share path '$path'"
+      }
+    }
+  }
   if (-not (Test-CsiPartitionAccessPath $path)) {
-    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $path) {
+      throw "failed to delete SMB share path '$path'"
+    }
   }
 }
 @{ ok=$true }

@@ -51,6 +51,7 @@ Assumptions / contracts:
   MapDiskToTarget(ctx, targetName, vhdxPath string) (lun int32, err error)
   UnmapDiskFromTarget(ctx, targetName, vhdxPath string) error
   DeleteVirtualDisk(ctx, vhdxPath string) error
+  DeleteTarget(ctx, targetName string) error
   GetVolumeByName(ctx, name, parentDir string) (exists bool, vhdxPath string, sizeBytes int64, targetName string, targetIQN string, lun int32, err error)
   AllowInitiator(ctx, targetName, initiatorIQN string) error
   DenyInitiator(ctx, targetName, initiatorIQN string) error
@@ -1441,15 +1442,15 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	case ProtocolNFS:
 		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
 		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, sharePath); err != nil {
-			klog.Warningf("DeleteNfsShare: %v", err)
+			return nil, status.Errorf(codes.Internal, "DeleteNfsShare: %v", err)
 		}
 		if decoded.ShareBackend == fileShareBackendVHDX {
 			if decoded.VHDXPath != "" {
 				if err := cs.Driver.backend.UnmountFileShareVirtualDisk(ctx, decoded.VHDXPath, sharePath); err != nil {
-					klog.Warningf("UnmountFileShareVirtualDisk: %v", err)
+					return nil, status.Errorf(codes.Internal, "UnmountFileShareVirtualDisk: %v", err)
 				}
 				if err := cs.Driver.backend.DeleteVirtualDisk(ctx, decoded.VHDXPath); err != nil {
-					klog.Warningf("DeleteVirtualDisk: %v", err)
+					return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
 				}
 			}
 		}
@@ -1457,15 +1458,15 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	case ProtocolSMB:
 		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
 		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, sharePath); err != nil {
-			klog.Warningf("DeleteSmbShare: %v", err)
+			return nil, status.Errorf(codes.Internal, "DeleteSmbShare: %v", err)
 		}
 		if decoded.ShareBackend == fileShareBackendVHDX {
 			if decoded.VHDXPath != "" {
 				if err := cs.Driver.backend.UnmountFileShareVirtualDisk(ctx, decoded.VHDXPath, sharePath); err != nil {
-					klog.Warningf("UnmountFileShareVirtualDisk: %v", err)
+					return nil, status.Errorf(codes.Internal, "UnmountFileShareVirtualDisk: %v", err)
 				}
 				if err := cs.Driver.backend.DeleteVirtualDisk(ctx, decoded.VHDXPath); err != nil {
-					klog.Warningf("DeleteVirtualDisk: %v", err)
+					return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
 				}
 			}
 		}
@@ -1481,6 +1482,11 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	if id.VHDXPath != "" {
 		if err := cs.Driver.backend.DeleteVirtualDisk(ctx, id.VHDXPath); err != nil {
 			return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
+		}
+		if targetName := targetNameFromVolID(id); targetName != "" {
+			if err := cs.Driver.backend.DeleteTarget(ctx, targetName); err != nil {
+				return nil, status.Errorf(codes.Internal, "DeleteTarget: %v", err)
+			}
 		}
 	}
 	return &csi.DeleteVolumeResponse{}, nil

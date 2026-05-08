@@ -66,6 +66,29 @@ Existing PV objects that reference a legacy `spec.csi.driver` need to be recreat
 
 Each protocol folder under [`examples/`](./examples/) starts with `01-storageclass/` and builds on the PVC names from the previous examples.
 
+### Deletion and Reclaim Policy
+
+Dynamic examples use `reclaimPolicy: Delete`. Static PV import examples use
+`persistentVolumeReclaimPolicy: Retain` so existing storage is not removed by
+Kubernetes.
+
+| Reclaim policy | Kubernetes behavior | Driver cleanup |
+| --- | --- | --- |
+| unset | Kubernetes defaults dynamically provisioned PVs to `Delete`. | Same as `Delete`. |
+| `Delete` | When the PVC is deleted and the PV is released, the external provisioner calls CSI `DeleteVolume`. The PV finalizer remains until the driver returns success. | The driver deletes the Windows-side asset for dynamically provisioned volumes. If cleanup fails, `DeleteVolume` returns an error so Kubernetes retries. |
+| `Retain` | The PV is released for manual reclamation. Deleting the PVC, and later deleting the PV object, does not call CSI `DeleteVolume` for backend deletion. | The Windows-side asset remains. Remove it manually after verifying no workload still needs the data. |
+| `Recycle` | Deprecated Kubernetes PV policy and not a StorageClass reclaim policy for this CSI driver. | Not supported; use `Delete` or `Retain`. |
+
+With `Delete`, protocol-specific cleanup is:
+
+| Mode | What is removed |
+| --- | --- |
+| iSCSI | The node unmounts and logs out during pod teardown. Controller deletion removes the iSCSI target mapping, deletes the VHDX file, then deletes the Windows iSCSI target. |
+| NFS directory | The NFS share and quota are removed, then the backing directory is deleted. |
+| NFS VHDX | The NFS share and quota are removed, the mounted VHDX access path is removed, the VHDX is dismounted, and the VHDX file is deleted. |
+| SMB directory | The SMB share and quota are removed, then the backing directory is deleted. |
+| SMB VHDX | The SMB share and quota are removed, the mounted VHDX access path is removed, the VHDX is dismounted, and the VHDX file is deleted. |
+
 ---
 
 ### Prerequisites
