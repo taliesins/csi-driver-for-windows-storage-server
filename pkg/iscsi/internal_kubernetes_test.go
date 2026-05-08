@@ -15,7 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 )
 
 func TestCreateVolumeParametersStripsCSIKeys(t *testing.T) {
@@ -167,7 +170,7 @@ func TestReconcilePersistentVolumeDeletionDefersWhileVolumeAttachmentExists(t *t
 		return nil
 	}
 
-	err := d.reconcilePersistentVolumeDeletion(context.Background(), client, pv)
+	err := d.reconcilePersistentVolumeDeletion(context.Background(), client, internalTestVolumeAttachmentLister(t, va), pv)
 
 	require.NoError(t, err)
 	_, err = client.CoreV1().PersistentVolumes().Get(context.Background(), pv.Name, metav1.GetOptions{})
@@ -184,7 +187,7 @@ func TestReconcilePersistentVolumeDeletionDeletesBackendWhenNoVolumeAttachmentEx
 		return nil
 	}
 
-	err := d.reconcilePersistentVolumeDeletion(context.Background(), client, pv)
+	err := d.reconcilePersistentVolumeDeletion(context.Background(), client, internalTestVolumeAttachmentLister(t), pv)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"D:\\vhdx\\test-volume.vhdx"}, deletedVHDXPaths)
@@ -213,7 +216,7 @@ func TestReconcileVolumeAttachmentPublishesAndSetsAttachedStatus(t *testing.T) {
 		return nil
 	}
 
-	err := d.reconcileVolumeAttachment(context.Background(), client, va)
+	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t, pv), va)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"iqn.2004-10.com.ubuntu:01:test"}, allowedInitiators)
@@ -251,7 +254,7 @@ func TestReconcileVolumeAttachmentUnpublishesAndRemovesFinalizer(t *testing.T) {
 		return nil
 	}
 
-	err := d.reconcileVolumeAttachment(context.Background(), client, va)
+	err := d.reconcileVolumeAttachment(context.Background(), client, internalTestPersistentVolumeLister(t, pv), va)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"iqn.2004-10.com.ubuntu:01:test"}, deniedInitiators)
@@ -313,6 +316,24 @@ func TestReconcilePersistentVolumeClaimRejectsPVCCloneWithoutCreatingBackendVolu
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only snapshot volume content sources are supported")
+}
+
+func internalTestPersistentVolumeLister(t *testing.T, pvs ...*v1.PersistentVolume) corelisters.PersistentVolumeLister {
+	t.Helper()
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, pv := range pvs {
+		require.NoError(t, indexer.Add(pv))
+	}
+	return corelisters.NewPersistentVolumeLister(indexer)
+}
+
+func internalTestVolumeAttachmentLister(t *testing.T, vas ...*storagev1.VolumeAttachment) storagelisters.VolumeAttachmentLister {
+	t.Helper()
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, va := range vas {
+		require.NoError(t, indexer.Add(va))
+	}
+	return storagelisters.NewVolumeAttachmentLister(indexer)
 }
 
 func internalTestStorageClass(driverName, name string) *storagev1.StorageClass {

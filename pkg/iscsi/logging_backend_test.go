@@ -28,9 +28,23 @@ func TestSanitizeMountOptionsForLogRedactsCredentials(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"rw",
-		"username=dbuser",
+		"username=<redacted>",
 		"password=<redacted>",
 		"credentials=<redacted>",
+	}, got)
+}
+
+func TestSanitizeMountOptionsForDebugLogKeepsUsername(t *testing.T) {
+	got := sanitizeMountOptionsForDebugLog([]string{
+		"rw",
+		"username=dbuser",
+		"password=S3cret!",
+	})
+
+	assert.Equal(t, []string{
+		"rw",
+		"username=dbuser",
+		"password=<redacted>",
 	}, got)
 }
 

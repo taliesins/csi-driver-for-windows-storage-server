@@ -84,6 +84,14 @@ spec:
             - containerPort: {{ $driver.livenessPort }}
               name: healthz
               protocol: TCP
+          livenessProbe:
+            failureThreshold: 5
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 30
       volumes:
         - name: socket-dir
           hostPath:

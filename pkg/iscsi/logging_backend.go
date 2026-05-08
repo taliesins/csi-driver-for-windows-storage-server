@@ -75,6 +75,14 @@ func isSensitiveLogKey(key string) bool {
 }
 
 func sanitizeMountOptionsForLog(opts []string) []string {
+	return sanitizeMountOptionsForLogWithUsername(opts, false)
+}
+
+func sanitizeMountOptionsForDebugLog(opts []string) []string {
+	return sanitizeMountOptionsForLogWithUsername(opts, true)
+}
+
+func sanitizeMountOptionsForLogWithUsername(opts []string, includeUsername bool) []string {
 	if len(opts) == 0 {
 		return nil
 	}
@@ -89,6 +97,14 @@ func sanitizeMountOptionsForLog(opts []string) []string {
 			strings.HasPrefix(lower, "credential="):
 			key, _, _ := strings.Cut(trimmed, "=")
 			out = append(out, key+"=<redacted>")
+		case strings.HasPrefix(lower, "username="),
+			strings.HasPrefix(lower, "user="):
+			key, _, _ := strings.Cut(trimmed, "=")
+			if includeUsername {
+				out = append(out, trimmed)
+			} else {
+				out = append(out, key+"=<redacted>")
+			}
 		default:
 			out = append(out, trimmed)
 		}

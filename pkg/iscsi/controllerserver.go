@@ -967,7 +967,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if err != nil {
 		return nil, err
 	}
-	klog.Infof("CreateVolume request: name=%q protocol=%s capabilityCount=%d contentSource=%t", req.GetName(), protocolForLog(protocol), len(req.GetVolumeCapabilities()), req.GetVolumeContentSource() != nil)
+	cs.debugf("CreateVolume request: name=%q protocol=%s capabilityCount=%d contentSource=%t", req.GetName(), protocolForLog(protocol), len(req.GetVolumeCapabilities()), req.GetVolumeContentSource() != nil)
 	cs.debugf("CreateVolume parameters: name=%q protocol=%s parameterKeys=%q", req.GetName(), protocolForLog(protocol), sortedMapKeys(params))
 	for _, vc := range req.GetVolumeCapabilities() {
 		if !cs.supportsAccessModeForProtocol(vc.GetAccessMode().GetMode(), protocol) {
@@ -1075,7 +1075,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				ContentSource: req.GetVolumeContentSource(),
 			},
 		}
-		klog.Infof("CreateVolume completed: name=%q protocol=%s source=snapshot targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, targetName, targetIQN, lun, exportedPath, vi.SizeBytes)
+		cs.debugf("CreateVolume completed: name=%q protocol=%s source=snapshot targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, targetName, targetIQN, lun, exportedPath, vi.SizeBytes)
 		return resp, nil
 	}
 
@@ -1125,7 +1125,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				}, params),
 			},
 		}
-		klog.Infof("CreateVolume completed: name=%q protocol=%s existing=true targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, existingTargetName, targetIQN, existingLUN, vhdxPath, existingSize)
+		cs.debugf("CreateVolume completed: name=%q protocol=%s existing=true targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, existingTargetName, targetIQN, existingLUN, vhdxPath, existingSize)
 		return resp, nil
 	}
 
@@ -1169,7 +1169,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			}, params),
 		},
 	}
-	klog.Infof("CreateVolume completed: name=%q protocol=%s existing=false targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, targetName, targetIQN, lun, vhdxPath, actual)
+	cs.debugf("CreateVolume completed: name=%q protocol=%s existing=false targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, targetName, targetIQN, lun, vhdxPath, actual)
 	return resp, nil
 }
 
@@ -1196,7 +1196,7 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 		return nil, err
 	}
 	name := req.GetName()
-	klog.Infof("CreateVolume file-share request: name=%q protocol=%s shareBackend=%q parentDir=%q requestedBytes=%d", name, ProtocolNFS, shareBackend, parentDir, size)
+	cs.debugf("CreateVolume file-share request: name=%q protocol=%s shareBackend=%q parentDir=%q requestedBytes=%d", name, ProtocolNFS, shareBackend, parentDir, size)
 	if shareBackend == fileShareBackendVHDX {
 		return cs.createVHDXBackedNfsVolume(ctx, req, name, parentDir, nfsServer, size, nfsOpts)
 	}
@@ -1227,7 +1227,7 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 			ContentSource: req.GetVolumeContentSource(),
 		},
 	}
-	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q exportPath=%q sharePath=%q capacityBytes=%d", name, ProtocolNFS, shareBackend, exists, info.NfsServer, info.NfsExportPath, info.SharePath, capacityBytes)
+	cs.debugf("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q exportPath=%q sharePath=%q capacityBytes=%d", name, ProtocolNFS, shareBackend, exists, info.NfsServer, info.NfsExportPath, info.SharePath, capacityBytes)
 	return resp, nil
 }
 
@@ -1238,7 +1238,7 @@ func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *
 		return nil, err
 	}
 	sharePath := joinWindowsPath(shareParentDir, name)
-	klog.Infof("CreateVolume VHDX-backed file-share request: name=%q protocol=%s sharePath=%q vhdxParentDir=%q requestedBytes=%d", name, ProtocolNFS, sharePath, vhdxParentDir, size)
+	cs.debugf("CreateVolume VHDX-backed file-share request: name=%q protocol=%s sharePath=%q vhdxParentDir=%q requestedBytes=%d", name, ProtocolNFS, sharePath, vhdxParentDir, size)
 	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, shareParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetNfsShare: %v", err)
@@ -1305,7 +1305,7 @@ func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *
 			ContentSource: req.GetVolumeContentSource(),
 		},
 	}
-	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q exportPath=%q sharePath=%q vhdxPath=%q capacityBytes=%d", name, ProtocolNFS, fileShareBackendVHDX, exists, info.NfsServer, info.NfsExportPath, info.SharePath, info.VHDXPath, capacityBytes)
+	cs.debugf("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q exportPath=%q sharePath=%q vhdxPath=%q capacityBytes=%d", name, ProtocolNFS, fileShareBackendVHDX, exists, info.NfsServer, info.NfsExportPath, info.SharePath, info.VHDXPath, capacityBytes)
 	return resp, nil
 }
 
@@ -1332,7 +1332,7 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 		return nil, err
 	}
 	name := req.GetName()
-	klog.Infof("CreateVolume file-share request: name=%q protocol=%s shareBackend=%q parentDir=%q requestedBytes=%d", name, ProtocolSMB, shareBackend, parentDir, size)
+	cs.debugf("CreateVolume file-share request: name=%q protocol=%s shareBackend=%q parentDir=%q requestedBytes=%d", name, ProtocolSMB, shareBackend, parentDir, size)
 	if shareBackend == fileShareBackendVHDX {
 		return cs.createVHDXBackedSmbVolume(ctx, req, name, parentDir, smbServer, size, smbOpts)
 	}
@@ -1370,7 +1370,7 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 			ContentSource: req.GetVolumeContentSource(),
 		},
 	}
-	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q share=%q sharePath=%q capacityBytes=%d", name, ProtocolSMB, shareBackend, exists, info.SmbServer, info.SmbShareName, info.SharePath, capacityBytes)
+	cs.debugf("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q share=%q sharePath=%q capacityBytes=%d", name, ProtocolSMB, shareBackend, exists, info.SmbServer, info.SmbShareName, info.SharePath, capacityBytes)
 	return resp, nil
 }
 
@@ -1381,7 +1381,7 @@ func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *
 		return nil, err
 	}
 	sharePath := joinWindowsPath(shareParentDir, name)
-	klog.Infof("CreateVolume VHDX-backed file-share request: name=%q protocol=%s sharePath=%q vhdxParentDir=%q requestedBytes=%d", name, ProtocolSMB, sharePath, vhdxParentDir, size)
+	cs.debugf("CreateVolume VHDX-backed file-share request: name=%q protocol=%s sharePath=%q vhdxParentDir=%q requestedBytes=%d", name, ProtocolSMB, sharePath, vhdxParentDir, size)
 	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, shareParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetSmbShare: %v", err)
@@ -1455,7 +1455,7 @@ func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *
 			ContentSource: req.GetVolumeContentSource(),
 		},
 	}
-	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q share=%q sharePath=%q vhdxPath=%q capacityBytes=%d", name, ProtocolSMB, fileShareBackendVHDX, exists, info.SmbServer, info.SmbShareName, info.SharePath, info.VHDXPath, capacityBytes)
+	cs.debugf("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q share=%q sharePath=%q vhdxPath=%q capacityBytes=%d", name, ProtocolSMB, fileShareBackendVHDX, exists, info.SmbServer, info.SmbShareName, info.SharePath, info.VHDXPath, capacityBytes)
 	return resp, nil
 }
 

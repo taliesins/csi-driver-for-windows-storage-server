@@ -57,6 +57,12 @@ func (ns *nodeServer) nodeID() string {
 	return ns.Driver.nodeID
 }
 
+func (ns *nodeServer) debugf(format string, args ...any) {
+	if ns != nil && ns.Driver != nil && ns.Driver.debug {
+		klog.Infof("node debug: "+format, args...)
+	}
+}
+
 // ---------- init / small helpers ----------
 
 func (ns *nodeServer) init() error {
@@ -639,6 +645,7 @@ func (ns *nodeServer) stageFileShareVolume(req *csi.NodeStageVolumeRequest, prot
 	}
 	if notMnt {
 		klog.Infof("NodeStageVolume: mounting file-share volume: node=%q protocol=%s source=%q stagingTargetPath=%q fsType=%q options=%q", ns.nodeID(), proto, source, req.GetStagingTargetPath(), fsType, sanitizeMountOptionsForLog(opts))
+		ns.debugf("NodeStageVolume file-share mount options: node=%q protocol=%s source=%q stagingTargetPath=%q fsType=%q options=%q", ns.nodeID(), proto, source, req.GetStagingTargetPath(), fsType, sanitizeMountOptionsForDebugLog(opts))
 		if err := mountPrepared(ns.mounter, source, req.GetStagingTargetPath(), fsType, opts, sensitiveOpts); err != nil {
 			return nil, status.Errorf(codes.Internal, "mount %s volume: %v", proto, err)
 		}
@@ -835,9 +842,8 @@ func (ns *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 		if req.GetReadonly() {
 			opts = append(opts, "ro")
 		}
-		opts, sensitiveOpts := splitSensitiveMountOptions(opts)
 		klog.Infof("NodePublishVolume: bind-mounting file-share volume: node=%q protocol=%s source=%q targetPath=%q readonly=%t options=%q", ns.nodeID(), proto, staging, req.GetTargetPath(), req.GetReadonly(), sanitizeMountOptionsForLog(opts))
-		if err := mountPrepared(ns.mounter, staging, req.GetTargetPath(), "", opts, sensitiveOpts); err != nil {
+		if err := mountPrepared(ns.mounter, staging, req.GetTargetPath(), "", opts, nil); err != nil {
 			return nil, status.Errorf(codes.Internal, "bind-mount publish failed: %v", err)
 		}
 		klog.Infof("NodePublishVolume: file-share volume published: node=%q protocol=%s source=%q targetPath=%q", ns.nodeID(), proto, staging, req.GetTargetPath())

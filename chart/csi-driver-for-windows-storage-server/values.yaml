@@ -1,8 +1,8 @@
 # -- Install only node-side resources. Use this for static, pre-provisioned volumes when no controller or WinRM Secret is needed.
 nodeOnly: false
 
-# -- Enable detailed driver action logging without logging secret values. Enabled by default while driver cleanup and attach flows are being hardened.
-debug: true
+# -- Enable detailed driver action logging without logging secret values. Disabled by default; enable when troubleshooting.
+debug: false
 
 # -- Driver and built-in Kubernetes controller verbosity.
 logLevel: 2

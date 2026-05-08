@@ -16,8 +16,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 	registrationv1 "k8s.io/kubelet/pkg/apis/pluginregistration/v1"
 
@@ -34,6 +40,9 @@ const (
 
 	selectedNodeAnnotation = "volume.kubernetes.io/selected-node"
 	csiParamPrefix         = "csi.storage.k8s.io/"
+
+	internalProvisionerPVKeyPrefix  = "pv/"
+	internalProvisionerPVCKeyPrefix = "pvc/"
 )
 
 type InternalKubernetesConfig struct {
@@ -67,12 +76,7 @@ func (d *driver) startInternalKubernetes(ctx context.Context) {
 		if err != nil {
 			klog.Fatalf("create Kubernetes client for built-in CSI controllers: %v", err)
 		}
-		klog.Infof("starting built-in CSI provisioner: driver=%q resync=%s", d.name, cfg.ResyncPeriod)
-		go d.runInternalProvisioner(ctx, client, cfg.ResyncPeriod)
-		if cfg.ControllerPublish {
-			klog.Infof("starting built-in CSI attacher: driver=%q resync=%s", d.name, cfg.ResyncPeriod)
-			go d.runInternalAttacher(ctx, client, cfg.ResyncPeriod)
-		}
+		d.startInternalControllerReconcilers(ctx, client, cfg)
 	case DriverModeNode:
 		if err := d.startInternalNodeRegistrar(ctx, cfg.KubeletRegistrationPath); err != nil {
 			klog.Fatalf("start built-in CSI node registrar: %v", err)
@@ -131,47 +135,187 @@ func startInternalHealthServer(ctx context.Context, port int) {
 	}()
 }
 
-func (d *driver) runInternalProvisioner(ctx context.Context, client kubernetes.Interface, period time.Duration) {
-	ticker := time.NewTicker(period)
-	defer ticker.Stop()
-	for {
-		d.reconcileInternalProvisioner(ctx, client)
-		select {
-		case <-ctx.Done():
-			klog.Infof("stopping built-in CSI provisioner")
-			return
-		case <-ticker.C:
-		}
+func (d *driver) startInternalControllerReconcilers(ctx context.Context, client kubernetes.Interface, cfg InternalKubernetesConfig) {
+	factory := informers.NewSharedInformerFactory(client, cfg.ResyncPeriod)
+	pvInformer := factory.Core().V1().PersistentVolumes()
+	pvcInformer := factory.Core().V1().PersistentVolumeClaims()
+	vaInformer := factory.Storage().V1().VolumeAttachments()
+
+	provisionerQueue := workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.DefaultTypedControllerRateLimiter[string](), workqueue.TypedRateLimitingQueueConfig[string]{Name: "windows-storage-internal-provisioner"})
+	attacherQueue := workqueue.NewTypedRateLimitingQueueWithConfig(workqueue.DefaultTypedControllerRateLimiter[string](), workqueue.TypedRateLimitingQueueConfig[string]{Name: "windows-storage-internal-attacher"})
+
+	if _, err := pvInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { d.enqueueProvisionerPV(provisionerQueue, obj) },
+		UpdateFunc: func(_, obj interface{}) { d.enqueueProvisionerPV(provisionerQueue, obj) },
+		DeleteFunc: func(obj interface{}) { d.enqueueProvisionerPV(provisionerQueue, obj) },
+	}); err != nil {
+		klog.Fatalf("register built-in provisioner PV informer handler: %v", err)
+	}
+	if _, err := pvcInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { d.enqueueProvisionerPVC(provisionerQueue, obj) },
+		UpdateFunc: func(_, obj interface{}) { d.enqueueProvisionerPVC(provisionerQueue, obj) },
+		DeleteFunc: func(obj interface{}) { d.enqueueProvisionerPVC(provisionerQueue, obj) },
+	}); err != nil {
+		klog.Fatalf("register built-in provisioner PVC informer handler: %v", err)
+	}
+	if _, err := vaInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			d.enqueueProvisionerPVForVolumeAttachment(provisionerQueue, obj)
+			if cfg.ControllerPublish {
+				d.enqueueAttacherVolumeAttachment(attacherQueue, obj)
+			}
+		},
+		UpdateFunc: func(_, obj interface{}) {
+			d.enqueueProvisionerPVForVolumeAttachment(provisionerQueue, obj)
+			if cfg.ControllerPublish {
+				d.enqueueAttacherVolumeAttachment(attacherQueue, obj)
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			d.enqueueProvisionerPVForVolumeAttachment(provisionerQueue, obj)
+			if cfg.ControllerPublish {
+				d.enqueueAttacherVolumeAttachment(attacherQueue, obj)
+			}
+		},
+	}); err != nil {
+		klog.Fatalf("register built-in VolumeAttachment informer handler: %v", err)
+	}
+
+	klog.Infof("starting built-in CSI provisioner informers: driver=%q resync=%s", d.name, cfg.ResyncPeriod)
+	factory.Start(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), pvInformer.Informer().HasSynced, pvcInformer.Informer().HasSynced, vaInformer.Informer().HasSynced) {
+		klog.Warningf("built-in CSI controller informer cache sync stopped: driver=%q", d.name)
+		provisionerQueue.ShutDown()
+		attacherQueue.ShutDown()
+		return
+	}
+
+	go func() {
+		<-ctx.Done()
+		provisionerQueue.ShutDown()
+		attacherQueue.ShutDown()
+	}()
+	go d.runInternalProvisioner(ctx, client, pvInformer.Lister(), pvcInformer.Lister(), vaInformer.Lister(), provisionerQueue)
+	if cfg.ControllerPublish {
+		klog.Infof("starting built-in CSI attacher informers: driver=%q resync=%s", d.name, cfg.ResyncPeriod)
+		go d.runInternalAttacher(ctx, client, pvInformer.Lister(), vaInformer.Lister(), attacherQueue)
 	}
 }
 
-func (d *driver) reconcileInternalProvisioner(ctx context.Context, client kubernetes.Interface) {
-	pvList, err := client.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		klog.Warningf("built-in provisioner: list PersistentVolumes failed: %v", err)
+func (d *driver) enqueueProvisionerPV(queue workqueue.TypedRateLimitingInterface[string], obj interface{}) {
+	pv, ok := persistentVolumeFromEventObject(obj)
+	if !ok || pv.Name == "" {
 		return
 	}
-	pvcList, err := client.CoreV1().PersistentVolumeClaims(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		klog.Warningf("built-in provisioner: list PersistentVolumeClaims failed: %v", err)
-		return
-	}
-	d.debugf("built-in provisioner scan: persistentVolumes=%d persistentVolumeClaims=%d", len(pvList.Items), len(pvcList.Items))
+	queue.Add(internalProvisionerPVKeyPrefix + pv.Name)
+}
 
-	for i := range pvList.Items {
-		pv := &pvList.Items[i]
-		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.name {
-			continue
-		}
-		if err := d.reconcilePersistentVolumeDeletion(ctx, client, pv); err != nil {
-			klog.Warningf("built-in provisioner: PV cleanup failed: pv=%q error=%v", pv.Name, err)
-		}
+func (d *driver) enqueueProvisionerPVC(queue workqueue.TypedRateLimitingInterface[string], obj interface{}) {
+	pvc, ok := persistentVolumeClaimFromEventObject(obj)
+	if !ok {
+		return
 	}
-	for i := range pvcList.Items {
-		pvc := &pvcList.Items[i]
-		if err := d.reconcilePersistentVolumeClaim(ctx, client, pvc); err != nil {
-			klog.Warningf("built-in provisioner: PVC reconcile failed: namespace=%q pvc=%q error=%v", pvc.Namespace, pvc.Name, err)
+	key, err := cache.MetaNamespaceKeyFunc(pvc)
+	if err != nil {
+		klog.Warningf("built-in provisioner: build PVC queue key failed: namespace=%q pvc=%q error=%v", pvc.Namespace, pvc.Name, err)
+		return
+	}
+	queue.Add(internalProvisionerPVCKeyPrefix + key)
+}
+
+func (d *driver) enqueueProvisionerPVForVolumeAttachment(queue workqueue.TypedRateLimitingInterface[string], obj interface{}) {
+	va, ok := volumeAttachmentFromEventObject(obj)
+	if !ok || va.Spec.Attacher != d.name || va.Spec.Source.PersistentVolumeName == nil {
+		return
+	}
+	pvName := strings.TrimSpace(*va.Spec.Source.PersistentVolumeName)
+	if pvName == "" {
+		return
+	}
+	queue.Add(internalProvisionerPVKeyPrefix + pvName)
+}
+
+func (d *driver) enqueueAttacherVolumeAttachment(queue workqueue.TypedRateLimitingInterface[string], obj interface{}) {
+	va, ok := volumeAttachmentFromEventObject(obj)
+	if !ok || va.Spec.Attacher != d.name || va.Name == "" {
+		return
+	}
+	queue.Add(va.Name)
+}
+
+func persistentVolumeFromEventObject(obj interface{}) (*v1.PersistentVolume, bool) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	pv, ok := obj.(*v1.PersistentVolume)
+	return pv, ok
+}
+
+func persistentVolumeClaimFromEventObject(obj interface{}) (*v1.PersistentVolumeClaim, bool) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	pvc, ok := obj.(*v1.PersistentVolumeClaim)
+	return pvc, ok
+}
+
+func volumeAttachmentFromEventObject(obj interface{}) (*storagev1.VolumeAttachment, bool) {
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
+	va, ok := obj.(*storagev1.VolumeAttachment)
+	return va, ok
+}
+
+func (d *driver) runInternalProvisioner(ctx context.Context, client kubernetes.Interface, pvLister corelisters.PersistentVolumeLister, pvcLister corelisters.PersistentVolumeClaimLister, vaLister storagelisters.VolumeAttachmentLister, queue workqueue.TypedRateLimitingInterface[string]) {
+	for {
+		key, shutdown := queue.Get()
+		if shutdown {
+			klog.Infof("stopping built-in CSI provisioner")
+			return
 		}
+		err := d.reconcileInternalProvisioner(ctx, client, pvLister, pvcLister, vaLister, key)
+		if err != nil && ctx.Err() == nil {
+			klog.Warningf("built-in provisioner: reconcile failed: key=%q error=%v", key, err)
+			queue.AddRateLimited(key)
+		} else {
+			queue.Forget(key)
+		}
+		queue.Done(key)
+	}
+}
+
+func (d *driver) reconcileInternalProvisioner(ctx context.Context, client kubernetes.Interface, pvLister corelisters.PersistentVolumeLister, pvcLister corelisters.PersistentVolumeClaimLister, vaLister storagelisters.VolumeAttachmentLister, key string) error {
+	switch {
+	case strings.HasPrefix(key, internalProvisionerPVKeyPrefix):
+		pvName := strings.TrimSpace(strings.TrimPrefix(key, internalProvisionerPVKeyPrefix))
+		if pvName == "" {
+			return nil
+		}
+		pv, err := pvLister.Get(pvName)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get cached PersistentVolume %q: %w", pvName, err)
+		}
+		return d.reconcilePersistentVolumeDeletion(ctx, client, vaLister, pv)
+	case strings.HasPrefix(key, internalProvisionerPVCKeyPrefix):
+		nsName := strings.TrimPrefix(key, internalProvisionerPVCKeyPrefix)
+		namespace, name, err := cache.SplitMetaNamespaceKey(nsName)
+		if err != nil {
+			return fmt.Errorf("split PersistentVolumeClaim key %q: %w", nsName, err)
+		}
+		pvc, err := pvcLister.PersistentVolumeClaims(namespace).Get(name)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get cached PersistentVolumeClaim %q: %w", nsName, err)
+		}
+		return d.reconcilePersistentVolumeClaim(ctx, client, pvc)
+	default:
+		return fmt.Errorf("unknown provisioner queue key %q", key)
 	}
 }
 
@@ -251,7 +395,11 @@ func (d *driver) reconcilePersistentVolumeClaim(ctx context.Context, client kube
 	return nil
 }
 
-func (d *driver) reconcilePersistentVolumeDeletion(ctx context.Context, client kubernetes.Interface, pv *v1.PersistentVolume) error {
+func (d *driver) reconcilePersistentVolumeDeletion(ctx context.Context, client kubernetes.Interface, vaLister storagelisters.VolumeAttachmentLister, pv *v1.PersistentVolume) error {
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.name {
+		d.debugf("built-in provisioner: skipping PV for another driver: pv=%q", pv.Name)
+		return nil
+	}
 	reclaimPolicy := pv.Spec.PersistentVolumeReclaimPolicy
 	deleting := pv.DeletionTimestamp != nil
 	released := pv.Status.Phase == v1.VolumeReleased
@@ -273,7 +421,7 @@ func (d *driver) reconcilePersistentVolumeDeletion(ctx context.Context, client k
 	if volumeID == "" {
 		return fmt.Errorf("PV %q is missing CSI volume handle", pv.Name)
 	}
-	hasAttachment, err := d.volumeAttachmentExistsForPV(ctx, client, pv.Name)
+	hasAttachment, err := d.volumeAttachmentExistsForPV(vaLister, pv.Name)
 	if err != nil {
 		return err
 	}
@@ -299,39 +447,44 @@ func (d *driver) reconcilePersistentVolumeDeletion(ctx context.Context, client k
 	return nil
 }
 
-func (d *driver) runInternalAttacher(ctx context.Context, client kubernetes.Interface, period time.Duration) {
-	ticker := time.NewTicker(period)
-	defer ticker.Stop()
+func (d *driver) runInternalAttacher(ctx context.Context, client kubernetes.Interface, pvLister corelisters.PersistentVolumeLister, vaLister storagelisters.VolumeAttachmentLister, queue workqueue.TypedRateLimitingInterface[string]) {
 	for {
-		d.reconcileInternalAttacher(ctx, client)
-		select {
-		case <-ctx.Done():
+		key, shutdown := queue.Get()
+		if shutdown {
 			klog.Infof("stopping built-in CSI attacher")
 			return
-		case <-ticker.C:
 		}
+		err := d.reconcileInternalAttacher(ctx, client, pvLister, vaLister, key)
+		if err != nil && ctx.Err() == nil {
+			klog.Warningf("built-in attacher: reconcile failed: volumeAttachment=%q error=%v", key, err)
+			queue.AddRateLimited(key)
+		} else {
+			queue.Forget(key)
+		}
+		queue.Done(key)
 	}
 }
 
-func (d *driver) reconcileInternalAttacher(ctx context.Context, client kubernetes.Interface) {
-	list, err := client.StorageV1().VolumeAttachments().List(ctx, metav1.ListOptions{})
+func (d *driver) reconcileInternalAttacher(ctx context.Context, client kubernetes.Interface, pvLister corelisters.PersistentVolumeLister, vaLister storagelisters.VolumeAttachmentLister, key string) error {
+	vaName := strings.TrimSpace(key)
+	if vaName == "" {
+		return nil
+	}
+	va, err := vaLister.Get(vaName)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
 	if err != nil {
-		klog.Warningf("built-in attacher: list VolumeAttachments failed: %v", err)
-		return
+		return fmt.Errorf("get cached VolumeAttachment %q: %w", vaName, err)
 	}
-	d.debugf("built-in attacher scan: volumeAttachments=%d", len(list.Items))
-	for i := range list.Items {
-		va := &list.Items[i]
-		if va.Spec.Attacher != d.name {
-			continue
-		}
-		if err := d.reconcileVolumeAttachment(ctx, client, va); err != nil {
-			klog.Warningf("built-in attacher: reconcile failed: volumeAttachment=%q node=%q error=%v", va.Name, va.Spec.NodeName, err)
-		}
+	if va.Spec.Attacher != d.name {
+		d.debugf("built-in attacher: skipping VolumeAttachment for another attacher: volumeAttachment=%q attacher=%q", va.Name, va.Spec.Attacher)
+		return nil
 	}
+	return d.reconcileVolumeAttachment(ctx, client, pvLister, va)
 }
 
-func (d *driver) reconcileVolumeAttachment(ctx context.Context, client kubernetes.Interface, va *storagev1.VolumeAttachment) error {
+func (d *driver) reconcileVolumeAttachment(ctx context.Context, client kubernetes.Interface, pvLister corelisters.PersistentVolumeLister, va *storagev1.VolumeAttachment) error {
 	pvName := ""
 	if va.Spec.Source.PersistentVolumeName != nil {
 		pvName = strings.TrimSpace(*va.Spec.Source.PersistentVolumeName)
@@ -340,9 +493,9 @@ func (d *driver) reconcileVolumeAttachment(ctx context.Context, client kubernete
 		d.debugf("built-in attacher: skipping VolumeAttachment without PV source: volumeAttachment=%q", va.Name)
 		return nil
 	}
-	pv, err := client.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+	pv, err := pvLister.Get(pvName)
 	if err != nil {
-		return fmt.Errorf("get PersistentVolume %q: %w", pvName, err)
+		return fmt.Errorf("get cached PersistentVolume %q: %w", pvName, err)
 	}
 	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != d.name {
 		d.debugf("built-in attacher: skipping VolumeAttachment for another driver: volumeAttachment=%q pv=%q", va.Name, pvName)
@@ -447,7 +600,8 @@ func (d *driver) startInternalNodeRegistrar(ctx context.Context, kubeletRegistra
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("create registration socket directory: %w", err)
 	}
-	listener, err := net.Listen("unix", socketPath)
+	lc := net.ListenConfig{}
+	listener, err := lc.Listen(ctx, "unix", socketPath)
 	if err != nil {
 		return fmt.Errorf("listen on registration socket %q: %w", socketPath, err)
 	}
@@ -747,13 +901,15 @@ func updateVAFinalizers(ctx context.Context, client kubernetes.Interface, va *st
 	return nil
 }
 
-func (d *driver) volumeAttachmentExistsForPV(ctx context.Context, client kubernetes.Interface, pvName string) (bool, error) {
-	list, err := client.StorageV1().VolumeAttachments().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return false, fmt.Errorf("list VolumeAttachments for PersistentVolume %q: %w", pvName, err)
+func (d *driver) volumeAttachmentExistsForPV(vaLister storagelisters.VolumeAttachmentLister, pvName string) (bool, error) {
+	if vaLister == nil {
+		return false, fmt.Errorf("VolumeAttachment lister is required")
 	}
-	for i := range list.Items {
-		va := &list.Items[i]
+	list, err := vaLister.List(labels.Everything())
+	if err != nil {
+		return false, fmt.Errorf("list cached VolumeAttachments for PersistentVolume %q: %w", pvName, err)
+	}
+	for _, va := range list {
 		if va.Spec.Attacher != d.name || va.Spec.Source.PersistentVolumeName == nil {
 			continue
 		}

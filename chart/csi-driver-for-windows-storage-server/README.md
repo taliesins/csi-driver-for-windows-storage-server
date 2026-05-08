@@ -31,7 +31,7 @@ The driver runs its Kubernetes provisioner, attacher, node registrar, and livene
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | nodeOnly | bool | `false` | Install only node-side resources. Use this for static, pre-provisioned volumes when no controller or WinRM Secret is needed. |
-| debug | bool | `true` | Enable detailed driver action logging without logging secret values. Enabled by default while driver cleanup and attach flows are being hardened. |
+| debug | bool | `false` | Enable detailed driver action logging without logging secret values. Disabled by default; enable when troubleshooting. |
 | logLevel | int | `2` | Driver and built-in Kubernetes controller verbosity. |
 | controller.replicas | int | `1` | Number of controller replicas. Values greater than 1 enable leader election. |
 | controller.livenessPort | int | `29752` | HTTP port used by the controller liveness probe. |

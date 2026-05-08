@@ -332,6 +332,12 @@ func (d *driver) serveController(ctx context.Context) {
 	if err != nil {
 		klog.Fatalf("failed to init WinRM backend: %v", err)
 	}
+	if wb, ok := b.(*WinRMBackend); ok {
+		wb.Debug = d.debug
+		if d.debug {
+			klog.Infof("controller debug: WinRM backend configured user: endpoint=%s user=%q", wb.endpointURL(), wb.User)
+		}
+	}
 	klog.Infof("validating WinRM backend configuration")
 	if err := validateBackendForRun(ctx, b); err != nil {
 		klog.Fatalf("failed to validate WinRM backend: %v", err)
@@ -490,6 +496,6 @@ func newWinRMBackendFromEnv() (Backend, error) {
 	if imp := strings.TrimSpace(os.Getenv("WINRM_PS_IMPORT")); imp != "" {
 		b.PSModuleImport = imp
 	}
-	klog.Infof("WinRM backend configured: endpoint=%s user=%q auth=%s tls=%t insecure=%t timeout=%s psImportConfigured=%t", b.endpointURL(), user, auth, useTLS, insecure, timeout, strings.TrimSpace(b.PSModuleImport) != "")
+	klog.Infof("WinRM backend configured: endpoint=%s auth=%s tls=%t insecure=%t timeout=%s psImportConfigured=%t", b.endpointURL(), auth, useTLS, insecure, timeout, strings.TrimSpace(b.PSModuleImport) != "")
 	return b, nil
 }

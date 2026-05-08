@@ -102,6 +102,7 @@ type WinRMBackend struct {
 	// Optional knobs
 	PSModuleImport string        // default: "Import-Module IscsiTarget"
 	Timeout        time.Duration // default: 60s
+	Debug          bool
 
 	psRunner powerShellRunner
 }
@@ -153,7 +154,10 @@ func (b *WinRMBackend) ValidateConnection(ctx context.Context) error {
 		defer cancel()
 	}
 
-	klog.Infof("checking WinRM connection: endpoint=%s user=%q auth=%s timeout=%s", b.endpointURL(), b.User, normalizeWinRMAuth(b.Auth), b.Timeout)
+	klog.Infof("checking WinRM connection: endpoint=%s auth=%s timeout=%s", b.endpointURL(), normalizeWinRMAuth(b.Auth), b.Timeout)
+	if b.Debug {
+		klog.Infof("controller debug: checking WinRM connection user: endpoint=%s user=%q", b.endpointURL(), b.User)
+	}
 	var out struct {
 		OK           bool   `json:"ok"`
 		ComputerName string `json:"computerName"`
@@ -166,7 +170,10 @@ func (b *WinRMBackend) ValidateConnection(ctx context.Context) error {
 	if !out.OK {
 		return fmt.Errorf("WinRM connection validation failed for %s: remote probe returned ok=false", b.endpointURL())
 	}
-	klog.Infof("WinRM connection check succeeded: endpoint=%s remoteComputer=%q remoteUser=%q", b.endpointURL(), out.ComputerName, out.UserName)
+	klog.Infof("WinRM connection check succeeded: endpoint=%s remoteComputer=%q", b.endpointURL(), out.ComputerName)
+	if b.Debug {
+		klog.Infof("controller debug: WinRM connection remote user: endpoint=%s remoteUser=%q", b.endpointURL(), out.UserName)
+	}
 	return nil
 }
 
