@@ -128,6 +128,8 @@ func TestWinRMBackend_DeleteNfsShare(t *testing.T) {
 		assert.Contains(t, script, "-ErrorAction Stop")
 		assert.Contains(t, script, "failed to delete NFS share")
 		assert.Contains(t, script, "failed to delete NFS share path")
+		assert.Contains(t, script, "cannot delete NFS share path")
+		assert.Contains(t, script, "still mounted")
 		assert.NotContains(t, script, "Remove-NfsShare -Name $name -Force")
 		assert.Contains(t, script, "Remove-Item")
 		return nil
@@ -306,6 +308,8 @@ func TestWinRMBackend_DeleteSmbShare(t *testing.T) {
 		assert.Contains(t, script, "-ErrorAction Stop")
 		assert.Contains(t, script, "failed to delete SMB share")
 		assert.Contains(t, script, "failed to delete SMB share path")
+		assert.Contains(t, script, "cannot delete SMB share path")
+		assert.Contains(t, script, "still mounted")
 		assert.Contains(t, script, "Remove-Item")
 		return nil
 	}

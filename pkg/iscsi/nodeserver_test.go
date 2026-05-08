@@ -320,6 +320,56 @@ func TestNodeStageVolume_BlockVolume(t *testing.T) {
 	assert.Empty(t, mockMount.formatAndMounts)
 }
 
+func TestNodeStageVolume_RollsBackConnectionWhenConnectorPersistFails(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingParent := t.TempDir()
+	stagingTargetPath := filepath.Join(stagingParent, "staging")
+	require.NoError(t, os.MkdirAll(stageConnectorFile(stagingTargetPath), 0o755))
+
+	originalConnect := iscsilibConnect
+	originalDisconnectVolume := disconnectVolume
+	originalDisconnect := iscsilibDisconnect
+	calls := []string{}
+	iscsilibConnect = func(c *iscsilib.Connector) (string, error) {
+		c.MountTargetDevice = &iscsilib.Device{Name: "sdb", Type: "disk"}
+		return "/dev/sdb", nil
+	}
+	disconnectVolume = func(got *iscsilib.Connector) error {
+		calls = append(calls, "device")
+		return nil
+	}
+	iscsilibDisconnect = func(got *iscsilib.Connector) error {
+		calls = append(calls, "session")
+		return errors.New("logout failed")
+	}
+	t.Cleanup(func() {
+		iscsilibConnect = originalConnect
+		disconnectVolume = originalDisconnectVolume
+		iscsilibDisconnect = originalDisconnect
+	})
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "persist iSCSI connector")
+	assert.Contains(t, err.Error(), "rollback disconnect failed")
+	assert.Contains(t, err.Error(), "logout failed")
+	assert.Equal(t, []string{"device", "session"}, calls)
+}
+
 func TestNodeStageVolume_StaticISCSIUsesVolumeContextWithoutPublishContext(t *testing.T) {
 	ns, _, _ := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
@@ -730,6 +780,53 @@ func TestNodeUnstageVolume_ReadsLegacyConnectorAfterUnmount(t *testing.T) {
 	assert.NoFileExists(t, legacyStageConnectorFile(stagingTargetPath))
 }
 
+func TestNodeUnstageVolume_UsesPersistedConnectorWhenDeviceAlreadyRemoved(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	require.NoError(t, os.WriteFile(stageConnectorFile(stagingTargetPath), []byte(`{
+  "target_iqn": "iqn.2024-01.com.example:test-volume",
+  "target_portal": ["10.0.0.1:3260"],
+  "mount_target_device": {"name": "sdb", "hctl": "2:0:0:1", "type": "disk"},
+  "devices": [{"name": "sdb", "hctl": "2:0:0:1", "type": "disk"}]
+}`), 0o600))
+
+	originalGetConnector := getConnectorFromFile
+	originalDisconnectVolume := disconnectVolume
+	originalDisconnect := iscsilibDisconnect
+	calls := []string{}
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		assert.Equal(t, stageConnectorFile(stagingTargetPath), filePath)
+		return nil, errors.New("mountTargetDevice /dev/sdb not found")
+	}
+	disconnectVolume = func(got *iscsilib.Connector) error {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", got.TargetIqn)
+		require.NotNil(t, got.MountTargetDevice)
+		assert.Equal(t, filepath.Join("/dev", "sdb"), got.MountTargetDevice.GetPath())
+		calls = append(calls, "device")
+		return nil
+	}
+	iscsilibDisconnect = func(got *iscsilib.Connector) error {
+		assert.Equal(t, "iqn.2024-01.com.example:test-volume", got.TargetIqn)
+		calls = append(calls, "session")
+		return nil
+	}
+	t.Cleanup(func() {
+		getConnectorFromFile = originalGetConnector
+		disconnectVolume = originalDisconnectVolume
+		iscsilibDisconnect = originalDisconnect
+	})
+
+	resp, err := ns.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, []string{"device", "session"}, calls)
+	assert.NoFileExists(t, stageConnectorFile(stagingTargetPath))
+}
+
 func TestNodeUnstageVolume_ReturnsErrorWhenSessionDisconnectFails(t *testing.T) {
 	ns, _, _ := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
@@ -759,6 +856,38 @@ func TestNodeUnstageVolume_ReturnsErrorWhenSessionDisconnectFails(t *testing.T) 
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "iSCSI logout failed")
+}
+
+func TestNodeUnstageVolume_ReturnsErrorForMalformedConnector(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	require.NoError(t, os.WriteFile(stageConnectorFile(stagingTargetPath), []byte(`not-json`), 0o600))
+
+	resp, err := ns.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "load iSCSI connector")
+}
+
+func TestNodeUnstageVolume_ReturnsErrorForMalformedLegacyConnectorAfterUnmount(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	mockMount.mountPaths = []string{stagingTargetPath}
+	require.NoError(t, os.WriteFile(legacyStageConnectorFile(stagingTargetPath), []byte(`not-json`), 0o600))
+
+	resp, err := ns.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Equal(t, []string{stagingTargetPath}, mockMount.unmountPaths)
+	assert.Contains(t, err.Error(), "load iSCSI connector")
 }
 
 // ---------------------------------------------------------------------------
@@ -893,6 +1022,7 @@ func TestNodePublishVolume_StaticISCSIUsesVolumeContextWithoutPublishContext(t *
 	ns, _, mockMount := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
 	targetPath := t.TempDir()
+	mockMount.mountPaths = []string{stagingTargetPath}
 
 	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
 		VolumeId:          "static-iscsi-volume",
@@ -974,6 +1104,7 @@ func TestNodePublishVolume_FilesystemVolume(t *testing.T) {
 	ns, _, mockMount := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
 	targetPath := t.TempDir()
+	mockMount.mountPaths = []string{stagingTargetPath}
 
 	_, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
 		VolumeId:          "test-vol",
@@ -1003,6 +1134,7 @@ func TestNodePublishVolume_ReadOnly(t *testing.T) {
 	ns, _, mockMount := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
 	targetPath := t.TempDir()
+	mockMount.mountPaths = []string{stagingTargetPath}
 
 	_, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
 		VolumeId:          "test-vol",
@@ -1077,6 +1209,104 @@ func TestNodePublishVolume_RecoverStagingUsesVolumeCapabilityFsType(t *testing.T
 	assert.Equal(t, stagingTargetPath, mockMount.formatAndMounts[0].source)
 	assert.Equal(t, targetPath, mockMount.formatAndMounts[0].target)
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "bind")
+}
+
+func TestNodePublishVolume_RecoverStagingReturnsErrorWhenConnectorMissing(t *testing.T) {
+	ns, _, mockMount := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	targetPath := t.TempDir()
+
+	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "test-vol",
+		TargetPath:        targetPath,
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "staging recovery failed")
+	assert.Empty(t, mockMount.formatAndMounts)
+}
+
+func TestNodePublishVolume_RecoverStagingReturnsErrorWhenConnectorNil(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	targetPath := t.TempDir()
+
+	originalGetConnector := getConnectorFromFile
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		return nil, nil
+	}
+	t.Cleanup(func() { getConnectorFromFile = originalGetConnector })
+
+	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "test-vol",
+		TargetPath:        targetPath,
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "connector not found")
+}
+
+func TestNodePublishVolume_RecoverStagingReturnsErrorWhenFormatMountFails(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+	targetPath := t.TempDir()
+	conn := &iscsilib.Connector{
+		MountTargetDevice: &iscsilib.Device{Name: "sdb", Type: "disk"},
+	}
+
+	originalGetConnector := getConnectorFromFile
+	originalFormatAndMount := formatAndMount
+	getConnectorFromFile = func(filePath string) (*iscsilib.Connector, error) {
+		return conn, nil
+	}
+	formatAndMount = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
+		return errors.New("format failed")
+	}
+	t.Cleanup(func() {
+		getConnectorFromFile = originalGetConnector
+		formatAndMount = originalFormatAndMount
+	})
+
+	resp, err := ns.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "test-vol",
+		TargetPath:        targetPath,
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "format+mount staging fallback failed")
 }
 
 func TestNodePublishVolume_FileShareBind(t *testing.T) {

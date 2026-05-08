@@ -38,6 +38,7 @@ type Backend interface {
 	MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error)
 	UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error
 	DeleteVirtualDisk(ctx context.Context, vhdxPath string) error
+	LookupTargetNameByIQN(ctx context.Context, targetIQN string) (string, error)
 	DeleteTarget(ctx context.Context, targetName string) error
 	GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error)
 	AllowInitiator(ctx context.Context, targetName, initiatorIQN string) error

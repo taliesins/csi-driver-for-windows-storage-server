@@ -617,6 +617,58 @@ func TestWinRMBackend_DeleteTarget(t *testing.T) {
 	}
 }
 
+func TestWinRMBackend_LookupTargetNameByIQN(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetIQN  string
+		psOut      any
+		psErr      error
+		wantTarget string
+		wantErr    bool
+	}{
+		{
+			name:       "target found",
+			targetIQN:  "iqn.1991-05.com.microsoft:win-storage-test-volume",
+			psOut:      struct{ TargetName string }{TargetName: "test-volume"},
+			wantTarget: "test-volume",
+		},
+		{
+			name:      "target missing",
+			targetIQN: "iqn.1991-05.com.microsoft:missing",
+			psOut:     struct{ TargetName string }{},
+		},
+		{
+			name:      "error from PowerShell",
+			targetIQN: "iqn.1991-05.com.microsoft:error",
+			psErr:     errors.New("lookup failed"),
+			wantErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			backend := newUnitWinRMBackend()
+			backend.psRunner = func(ctx context.Context, script string, out any) error {
+				assert.Contains(t, script, tt.targetIQN)
+				assert.Contains(t, script, "Get-IscsiServerTarget")
+				assert.Contains(t, script, "TargetIqn")
+				if out != nil {
+					copyTestOutput(out, tt.psOut)
+				}
+				return tt.psErr
+			}
+
+			targetName, err := backend.LookupTargetNameByIQN(context.Background(), tt.targetIQN)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantTarget, targetName)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DeleteVirtualDisk tests
 // ---------------------------------------------------------------------------

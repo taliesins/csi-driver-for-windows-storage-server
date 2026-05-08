@@ -51,6 +51,7 @@ Assumptions / contracts:
   MapDiskToTarget(ctx, targetName, vhdxPath string) (lun int32, err error)
   UnmapDiskFromTarget(ctx, targetName, vhdxPath string) error
   DeleteVirtualDisk(ctx, vhdxPath string) error
+  LookupTargetNameByIQN(ctx, targetIQN string) (targetName string, err error)
   DeleteTarget(ctx, targetName string) error
   GetVolumeByName(ctx, name, parentDir string) (exists bool, vhdxPath string, sizeBytes int64, targetName string, targetIQN string, lun int32, err error)
   AllowInitiator(ctx, targetName, initiatorIQN string) error
@@ -696,7 +697,7 @@ func decodeAnyVolumeID(id string) (*VolumeID, volID, error) {
 		return v, volID{
 			VolumeName:   v.Name,
 			TargetPortal: v.TargetPortal,
-			TargetName:   firstNonEmpty(v.TargetName, v.TargetIQN),
+			TargetName:   v.TargetName,
 			TargetIQN:    v.TargetIQN,
 			LUN:          int32(v.LUN),
 			VHDXPath:     v.VHDXPath,
@@ -706,9 +707,6 @@ func decodeAnyVolumeID(id string) (*VolumeID, volID, error) {
 	legacy, err := decodeVolID(id)
 	if err != nil {
 		return nil, volID{}, err
-	}
-	if legacy.TargetName == "" {
-		legacy.TargetName = legacy.TargetIQN
 	}
 	return &VolumeID{
 		Name:          legacy.VolumeName,
@@ -732,6 +730,21 @@ func iscsiTargetForVolume(params map[string]string, volName string) (targetName,
 
 func targetNameFromVolID(id volID) string {
 	return firstNonEmpty(id.TargetName, id.TargetIQN)
+}
+
+func (cs *ControllerServer) deleteTargetNameForVolume(ctx context.Context, id volID) (string, error) {
+	if targetName := strings.TrimSpace(id.TargetName); targetName != "" {
+		return targetName, nil
+	}
+	targetIQN := strings.TrimSpace(id.TargetIQN)
+	if targetIQN == "" {
+		return "", nil
+	}
+	targetName, err := cs.Driver.backend.LookupTargetNameByIQN(ctx, targetIQN)
+	if err != nil {
+		return "", status.Errorf(codes.Internal, "LookupTargetNameByIQN: %v", err)
+	}
+	return strings.TrimSpace(targetName), nil
 }
 
 func targetPortalAddress(targetPortal string, portalPort int) string {
@@ -1441,9 +1454,6 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	switch decoded.Protocol {
 	case ProtocolNFS:
 		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
-		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, sharePath); err != nil {
-			return nil, status.Errorf(codes.Internal, "DeleteNfsShare: %v", err)
-		}
 		if decoded.ShareBackend == fileShareBackendVHDX {
 			if decoded.VHDXPath != "" {
 				if err := cs.Driver.backend.UnmountFileShareVirtualDisk(ctx, decoded.VHDXPath, sharePath); err != nil {
@@ -1453,13 +1463,13 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 					return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
 				}
 			}
+		}
+		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, sharePath); err != nil {
+			return nil, status.Errorf(codes.Internal, "DeleteNfsShare: %v", err)
 		}
 		return &csi.DeleteVolumeResponse{}, nil
 	case ProtocolSMB:
 		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
-		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, sharePath); err != nil {
-			return nil, status.Errorf(codes.Internal, "DeleteSmbShare: %v", err)
-		}
 		if decoded.ShareBackend == fileShareBackendVHDX {
 			if decoded.VHDXPath != "" {
 				if err := cs.Driver.backend.UnmountFileShareVirtualDisk(ctx, decoded.VHDXPath, sharePath); err != nil {
@@ -1469,6 +1479,9 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 					return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
 				}
 			}
+		}
+		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, sharePath); err != nil {
+			return nil, status.Errorf(codes.Internal, "DeleteSmbShare: %v", err)
 		}
 		return &csi.DeleteVolumeResponse{}, nil
 	}
@@ -1480,11 +1493,15 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		}
 	}
 	if id.VHDXPath != "" {
+		deleteTargetName, err := cs.deleteTargetNameForVolume(ctx, id)
+		if err != nil {
+			return nil, err
+		}
 		if err := cs.Driver.backend.DeleteVirtualDisk(ctx, id.VHDXPath); err != nil {
 			return nil, status.Errorf(codes.Internal, "DeleteVirtualDisk: %v", err)
 		}
-		if targetName := targetNameFromVolID(id); targetName != "" {
-			if err := cs.Driver.backend.DeleteTarget(ctx, targetName); err != nil {
+		if deleteTargetName != "" {
+			if err := cs.Driver.backend.DeleteTarget(ctx, deleteTargetName); err != nil {
 				return nil, status.Errorf(codes.Internal, "DeleteTarget: %v", err)
 			}
 		}

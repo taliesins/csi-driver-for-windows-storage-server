@@ -407,6 +407,29 @@ if (Test-Path -LiteralPath $path) {
 	return b.runPS(ctx, s, &out)
 }
 
+func (b *WinRMBackend) LookupTargetNameByIQN(ctx context.Context, targetIQN string) (string, error) {
+	targetIQN = strings.TrimSpace(targetIQN)
+	if targetIQN == "" {
+		return "", nil
+	}
+	s := fmt.Sprintf(`
+$targetIQN = '%s'
+$target = @(Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -ErrorAction SilentlyContinue | Where-Object { [string]$_.TargetIqn -eq $targetIQN } | Select-Object -First 1)[0]
+if ($target) {
+  @{ targetName=[string]$target.TargetName }
+} else {
+  @{ targetName='' }
+}
+`, escapePS(targetIQN))
+	var out struct {
+		TargetName string `json:"targetName"`
+	}
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.TargetName), nil
+}
+
 func (b *WinRMBackend) DeleteTarget(ctx context.Context, targetName string) error {
 	targetName = strings.TrimSpace(targetName)
 	if targetName == "" {

@@ -334,6 +334,8 @@ if ($path -and (Test-Path -LiteralPath $path)) {
     if (Test-Path -LiteralPath $path) {
       throw "failed to delete NFS share path '$path'"
     }
+  } else {
+    throw "cannot delete NFS share path '$path' because it is still mounted"
   }
 }
 @{ ok=$true }
@@ -450,6 +452,8 @@ if ($path -and (Test-Path -LiteralPath $path)) {
     if (Test-Path -LiteralPath $path) {
       throw "failed to delete SMB share path '$path'"
     }
+  } else {
+    throw "cannot delete SMB share path '$path' because it is still mounted"
   }
 }
 @{ ok=$true }

@@ -186,7 +186,11 @@ func Login(tgtIQN, portal string) error {
 func Logout(tgtIQN, portal string) error {
 	klog.V(2).Infof("Begin Logout...")
 	args := []string{"-m", "node", "-T", tgtIQN, "-p", portal, "-u"}
-	_, err := iscsiCmd(args...)
+	out, err := iscsiCmd(args...)
+	if err != nil && isISCSIAlreadyAbsent(out, err) {
+		klog.V(2).Infof("iSCSI session for target %s at portal %s is already absent: %v", tgtIQN, portal, err)
+		return nil
+	}
 	return err
 }
 
@@ -194,8 +198,57 @@ func Logout(tgtIQN, portal string) error {
 func DeleteDBEntry(tgtIQN string) error {
 	klog.V(2).Infof("Begin DeleteDBEntry...")
 	args := []string{"-m", "node", "-T", tgtIQN, "-o", "delete"}
-	_, err := iscsiCmd(args...)
+	out, err := iscsiCmd(args...)
+	if err != nil && isISCSINodeDBEntryAlreadyAbsent(out, err) {
+		klog.V(2).Infof("iSCSI node DB entry for target %s is already absent: %v", tgtIQN, err)
+		return nil
+	}
 	return err
+}
+
+func isISCSIAlreadyAbsent(output string, err error) bool {
+	if err == nil {
+		return false
+	}
+	outputMsg := strings.ToLower(output)
+	errMsg := strings.ToLower(err.Error())
+	msg := outputMsg + " " + errMsg
+	for _, marker := range []string{
+		"no matching sessions",
+		"no records found",
+		"no record found",
+		"not currently logged in",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	if strings.TrimSpace(outputMsg) == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"not found",
+		"does not exist",
+		"not exist",
+		"could not find",
+	} {
+		if strings.Contains(outputMsg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isISCSINodeDBEntryAlreadyAbsent(output string, err error) bool {
+	if isISCSIAlreadyAbsent(output, err) {
+		return true
+	}
+	if strings.TrimSpace(output) == "" {
+		return false
+	}
+	msg := strings.ToLower(output + " " + err.Error())
+	return strings.Contains(msg, "could not execute operation on all records") &&
+		strings.Contains(msg, "database failure")
 }
 
 // DeleteIFace delete the iface

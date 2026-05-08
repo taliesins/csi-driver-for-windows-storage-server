@@ -65,6 +65,12 @@ func (m *MockBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) er
 	return args.Error(0)
 }
 
+// LookupTargetNameByIQN mocks LookupTargetNameByIQN.
+func (m *MockBackend) LookupTargetNameByIQN(ctx context.Context, targetIQN string) (string, error) {
+	args := m.Called(ctx, targetIQN)
+	return args.String(0), args.Error(1)
+}
+
 // DeleteTarget mocks DeleteTarget.
 func (m *MockBackend) DeleteTarget(ctx context.Context, targetName string) error {
 	args := m.Called(ctx, targetName)
@@ -242,6 +248,17 @@ func TestMockBackend_DeleteVirtualDisk(t *testing.T) {
 
 	err := m.DeleteVirtualDisk(context.Background(), "D:\\vhdx\\test-vol.vhdx")
 	assert.NoError(t, err)
+
+	m.AssertExpectations(t)
+}
+
+func TestMockBackend_LookupTargetNameByIQN(t *testing.T) {
+	m := new(MockBackend)
+	m.On("LookupTargetNameByIQN", mock.Anything, "iqn.1991-05.com.microsoft:server-test-vol").Return("test-vol", nil)
+
+	targetName, err := m.LookupTargetNameByIQN(context.Background(), "iqn.1991-05.com.microsoft:server-test-vol")
+	assert.NoError(t, err)
+	assert.Equal(t, "test-vol", targetName)
 
 	m.AssertExpectations(t)
 }
