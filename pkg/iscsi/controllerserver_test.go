@@ -761,6 +761,29 @@ func TestCreateVolume_InvalidAccessMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "access mode is not supported")
 }
 
+func TestCreateVolume_RejectsUnsupportedVolumeContentSource(t *testing.T) {
+	cs, _, _ := newTestControllerServer(t)
+	_, err := cs.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "clone-volume",
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}},
+		},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: newTestVolumeIDWithTargetName(t)},
+			},
+		},
+		Parameters: map[string]string{
+			"targetPortal":   "10.0.0.1:3260",
+			"vhdxParentPath": "D:\\vhdx",
+			"iqnPrefix":      "iqn.2024-01.com.example",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only snapshot volume content sources are supported")
+}
+
 func TestCreateVolume_ConsolidatedDriverRejectsMultiNodeISCSI(t *testing.T) {
 	cs, _, _ := newTestConsolidatedControllerServer(t)
 

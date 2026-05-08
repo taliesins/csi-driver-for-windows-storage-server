@@ -25,13 +25,15 @@ type mockMount struct {
 	unmountPaths     []string
 	formatAndMounts  []formatMountRecord
 	isMountPointErrs map[string]error
+	mountErr         error
 }
 
 type formatMountRecord struct {
-	source  string
-	target  string
-	fsType  string
-	options []string
+	source           string
+	target           string
+	fsType           string
+	options          []string
+	sensitiveOptions []string
 }
 
 func (m *mockMount) List() ([]mount.MountPoint, error) {
@@ -71,19 +73,21 @@ func (m *mockMount) GetMountRefs(path string) ([]string, error) {
 func (m *mockMount) Mount(source, target, fstype string, options []string) error {
 	m.mountPaths = append(m.mountPaths, target)
 	m.formatAndMounts = append(m.formatAndMounts, formatMountRecord{source: source, target: target, fsType: fstype, options: options})
-	return nil
+	return m.mountErr
 }
 
 func (m *mockMount) MountSensitive(source, target, fstype string, options, sensitiveOptions []string) error {
-	return nil
+	m.mountPaths = append(m.mountPaths, target)
+	m.formatAndMounts = append(m.formatAndMounts, formatMountRecord{source: source, target: target, fsType: fstype, options: options, sensitiveOptions: sensitiveOptions})
+	return m.mountErr
 }
 
 func (m *mockMount) MountSensitiveWithoutSystemd(source, target, fstype string, options, sensitiveOptions []string) error {
-	return nil
+	return m.MountSensitive(source, target, fstype, options, sensitiveOptions)
 }
 
 func (m *mockMount) MountSensitiveWithoutSystemdWithMountFlags(source, target, fstype string, options, sensitiveOptions, mountFlags []string) error {
-	return nil
+	return m.MountSensitive(source, target, fstype, options, sensitiveOptions)
 }
 
 func (m *mockMount) Unmount(target string) error {
@@ -126,6 +130,20 @@ func newTestNodeServer(t *testing.T) (*nodeServer, *driver, *mockMount) {
 // ---------------------------------------------------------------------------
 // NodeStageVolume tests
 // ---------------------------------------------------------------------------
+
+func TestSplitSensitiveMountOptions(t *testing.T) {
+	normal, sensitive := splitSensitiveMountOptions([]string{
+		"rw",
+		"password=secret",
+		"pass=secret",
+		"credentials=/etc/cifs-creds",
+		"credential=/etc/one-cred",
+		"username=dbuser",
+	})
+
+	assert.Equal(t, []string{"rw", "username=dbuser"}, normal)
+	assert.Equal(t, []string{"password=secret", "pass=secret", "credentials=/etc/cifs-creds", "credential=/etc/one-cred"}, sensitive)
+}
 
 func TestNodeStageVolume_VolumeIDRequired(t *testing.T) {
 	ns, _, _ := newTestNodeServer(t)
@@ -528,6 +546,112 @@ func TestNodeStageVolume_FilesystemFsType(t *testing.T) {
 	}
 }
 
+func TestNodeStageVolume_ReturnsErrorWhenStagedFilesystemNotReady(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	originalConnect := iscsilibConnect
+	originalFormatAndMount := formatAndMount
+	originalVerifyStagedFilesystem := verifyStagedFilesystem
+	originalReadyWait := stagedFilesystemReadyWait
+	iscsilibConnect = func(c *iscsilib.Connector) (string, error) {
+		c.MountTargetDevice = &iscsilib.Device{Name: "sdb", Type: "disk"}
+		return "/dev/sdb", nil
+	}
+	var formatted bool
+	formatAndMount = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
+		formatted = true
+		return nil
+	}
+	verifyStagedFilesystem = func(path string, opts []string, timeout time.Duration) error {
+		assert.True(t, formatted)
+		assert.Equal(t, stagingTargetPath, path)
+		return errors.New("input/output error")
+	}
+	stagedFilesystemReadyWait = time.Millisecond
+	t.Cleanup(func() {
+		iscsilibConnect = originalConnect
+		formatAndMount = originalFormatAndMount
+		verifyStagedFilesystem = originalVerifyStagedFilesystem
+		stagedFilesystemReadyWait = originalReadyWait
+	})
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+	})
+
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "staging filesystem not ready")
+	assert.Contains(t, err.Error(), "input/output error")
+}
+
+func TestNodeStageVolume_UsesSensitiveOptionsForISCSIMountSecrets(t *testing.T) {
+	ns, _, _ := newTestNodeServer(t)
+	stagingTargetPath := t.TempDir()
+
+	originalConnect := iscsilibConnect
+	originalFormatAndMount := formatAndMount
+	originalFormatAndMountSensitive := formatAndMountSensitive
+	originalVerifyStagedFilesystem := verifyStagedFilesystem
+	iscsilibConnect = func(c *iscsilib.Connector) (string, error) {
+		c.MountTargetDevice = &iscsilib.Device{Name: "sdb", Type: "disk"}
+		return "/dev/sdb", nil
+	}
+	formatAndMount = func(m *mount.SafeFormatAndMount, source, target, fsType string, options []string) error {
+		t.Fatalf("formatAndMount should not receive sensitive mount options")
+		return nil
+	}
+	var gotOptions, gotSensitiveOptions []string
+	formatAndMountSensitive = func(m *mount.SafeFormatAndMount, source, target, fsType string, options, sensitiveOptions []string) error {
+		gotOptions = append([]string{}, options...)
+		gotSensitiveOptions = append([]string{}, sensitiveOptions...)
+		return nil
+	}
+	verifyStagedFilesystem = func(path string, opts []string, timeout time.Duration) error {
+		assert.Equal(t, []string{"discard"}, opts)
+		return nil
+	}
+	t.Cleanup(func() {
+		iscsilibConnect = originalConnect
+		formatAndMount = originalFormatAndMount
+		formatAndMountSensitive = originalFormatAndMountSensitive
+		verifyStagedFilesystem = originalVerifyStagedFilesystem
+	})
+
+	resp, err := ns.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "test-vol",
+		StagingTargetPath: stagingTargetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		},
+		PublishContext: map[string]string{
+			"targetPortal": "10.0.0.1:3260",
+			"iqn":          "iqn.2024-01.com.example:test-volume",
+			"lun":          "0",
+		},
+		VolumeContext: map[string]string{
+			"mountOptions": "discard,credentials=/etc/iscsi-mount,password=secret",
+		},
+	})
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, []string{"discard"}, gotOptions)
+	assert.Equal(t, []string{"credentials=/etc/iscsi-mount", "password=secret"}, gotSensitiveOptions)
+}
+
 func TestNodeStageVolume_NFS(t *testing.T) {
 	ns, _, mockMount := newTestNodeServer(t)
 	stagingTargetPath := t.TempDir()
@@ -547,7 +671,7 @@ func TestNodeStageVolume_NFS(t *testing.T) {
 			"nfsExportPath": "/export/test",
 		},
 		VolumeContext: map[string]string{
-			"mountOptions":      "nfsvers=4.1,hard",
+			"mountOptions":      "nfsvers=4.1,hard,credentials=/etc/nfs-creds,password=nfs-secret",
 			"nfsVersion":        "4.2",
 			"nfsAuthentication": "sys,krb5p",
 		},
@@ -562,6 +686,10 @@ func TestNodeStageVolume_NFS(t *testing.T) {
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "nfsvers=4.1")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "vers=4.2")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "sec=krb5p")
+	assert.NotContains(t, mockMount.formatAndMounts[0].options, "credentials=/etc/nfs-creds")
+	assert.NotContains(t, mockMount.formatAndMounts[0].options, "password=nfs-secret")
+	assert.Contains(t, mockMount.formatAndMounts[0].sensitiveOptions, "credentials=/etc/nfs-creds")
+	assert.Contains(t, mockMount.formatAndMounts[0].sensitiveOptions, "password=nfs-secret")
 }
 
 func TestNodeStageVolume_NFSWithoutPublishContextUsesVolumeContext(t *testing.T) {
@@ -625,7 +753,8 @@ func TestNodeStageVolume_SMB(t *testing.T) {
 	assert.Equal(t, "cifs", mockMount.formatAndMounts[0].fsType)
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "vers=3.1.1")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "username=storage-user")
-	assert.Contains(t, mockMount.formatAndMounts[0].options, "password=storage-pass")
+	assert.NotContains(t, mockMount.formatAndMounts[0].options, "password=storage-pass")
+	assert.Contains(t, mockMount.formatAndMounts[0].sensitiveOptions, "password=storage-pass")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "domain=EXAMPLE")
 	assert.Contains(t, mockMount.formatAndMounts[0].options, "seal")
 }

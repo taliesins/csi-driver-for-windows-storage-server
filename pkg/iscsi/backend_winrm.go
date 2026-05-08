@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/masterzen/winrm"
+	klog "k8s.io/klog/v2"
 )
 
 type Endpoint = winrm.Endpoint
@@ -152,6 +153,7 @@ func (b *WinRMBackend) ValidateConnection(ctx context.Context) error {
 		defer cancel()
 	}
 
+	klog.Infof("checking WinRM connection: endpoint=%s user=%q auth=%s timeout=%s", b.endpointURL(), b.User, normalizeWinRMAuth(b.Auth), b.Timeout)
 	var out struct {
 		OK           bool   `json:"ok"`
 		ComputerName string `json:"computerName"`
@@ -164,6 +166,7 @@ func (b *WinRMBackend) ValidateConnection(ctx context.Context) error {
 	if !out.OK {
 		return fmt.Errorf("WinRM connection validation failed for %s: remote probe returned ok=false", b.endpointURL())
 	}
+	klog.Infof("WinRM connection check succeeded: endpoint=%s remoteComputer=%q remoteUser=%q", b.endpointURL(), out.ComputerName, out.UserName)
 	return nil
 }
 
@@ -277,6 +280,7 @@ func (b *WinRMBackend) EnsureTarget(ctx context.Context, targetName, targetIQN s
 	if targetName == "" {
 		return "", fmt.Errorf("target name is required")
 	}
+	klog.Infof("ensuring Windows iSCSI target: endpoint=%s targetName=%q requestedTargetIQN=%q", b.endpointURL(), targetName, targetIQN)
 	s := fmt.Sprintf(`
 $targetName = '%s'
 $targetIQN = '%s'
@@ -301,6 +305,7 @@ if (-not [string]::IsNullOrWhiteSpace($targetIQN) -and [string]$t.TargetIqn -ne 
 	if strings.TrimSpace(out.TargetIQN) == "" {
 		return "", fmt.Errorf("target %q has no TargetIqn", targetName)
 	}
+	klog.Infof("Windows iSCSI target ready: endpoint=%s targetName=%q targetIQN=%q", b.endpointURL(), targetName, out.TargetIQN)
 	return out.TargetIQN, nil
 }
 
@@ -333,6 +338,7 @@ Set-IscsiServerTarget @params | Out-Null
 }
 
 func (b *WinRMBackend) CreateVirtualDisk(ctx context.Context, name, parentDir string, sizeBytes int64) (string, int64, error) {
+	klog.Infof("creating or reusing Windows iSCSI virtual disk: endpoint=%s name=%q parentDir=%q sizeBytes=%d", b.endpointURL(), name, parentDir, sizeBytes)
 	s := fmt.Sprintf(`
 $parentDir = Resolve-CsiVHDXParentPath '%s'
 $path = Join-Path -Path $parentDir -ChildPath ('%s' + '.vhdx')
@@ -349,10 +355,12 @@ $vd = Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path
 	if err := b.runPS(ctx, s, &out); err != nil {
 		return "", 0, err
 	}
+	klog.Infof("Windows iSCSI virtual disk ready: endpoint=%s name=%q path=%q sizeBytes=%d", b.endpointURL(), name, out.Path, out.SizeBytes)
 	return out.Path, out.SizeBytes, nil
 }
 
 func (b *WinRMBackend) MapDiskToTarget(ctx context.Context, targetName, vhdxPath string) (int32, error) {
+	klog.Infof("mapping Windows iSCSI virtual disk to target: endpoint=%s targetName=%q vhdxPath=%q", b.endpointURL(), targetName, vhdxPath)
 	s := fmt.Sprintf(`
 $vd = Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path '%s'
 $mappedTargets = @(Get-MappedIscsiTargetNames -Path '%s')
@@ -368,10 +376,12 @@ if ($mappedTargets -notcontains '%s') {
 	if err := b.runPS(ctx, s, &out); err != nil {
 		return 0, err
 	}
+	klog.Infof("Windows iSCSI virtual disk mapped: endpoint=%s targetName=%q vhdxPath=%q lun=%d", b.endpointURL(), targetName, vhdxPath, out.LUN)
 	return out.LUN, nil
 }
 
 func (b *WinRMBackend) UnmapDiskFromTarget(ctx context.Context, targetName, vhdxPath string) error {
+	klog.Infof("unmapping Windows iSCSI virtual disk from target: endpoint=%s targetName=%q vhdxPath=%q", b.endpointURL(), targetName, vhdxPath)
 	s := fmt.Sprintf(`
 $targetName = '%s'
 $path = '%s'
@@ -386,10 +396,15 @@ if ($target -and @($target.LunMappings | Where-Object { $_.Path -eq $path }).Cou
 @{ ok = $true }
 `, escapePS(targetName), escapePS(vhdxPath))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows iSCSI virtual disk unmapped: endpoint=%s targetName=%q vhdxPath=%q", b.endpointURL(), targetName, vhdxPath)
+	return nil
 }
 
 func (b *WinRMBackend) DeleteVirtualDisk(ctx context.Context, vhdxPath string) error {
+	klog.Infof("deleting Windows iSCSI virtual disk: endpoint=%s vhdxPath=%q", b.endpointURL(), vhdxPath)
 	s := fmt.Sprintf(`
 $path = '%s'
 if (Get-IscsiVirtualDisk -ComputerName $IscsiTargetComputerName -Path $path -ErrorAction SilentlyContinue) {
@@ -404,7 +419,11 @@ if (Test-Path -LiteralPath $path) {
 @{ ok = $true }
 `, escapePS(vhdxPath))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows iSCSI virtual disk deleted or already absent: endpoint=%s vhdxPath=%q", b.endpointURL(), vhdxPath)
+	return nil
 }
 
 func (b *WinRMBackend) LookupTargetNameByIQN(ctx context.Context, targetIQN string) (string, error) {
@@ -435,6 +454,7 @@ func (b *WinRMBackend) DeleteTarget(ctx context.Context, targetName string) erro
 	if targetName == "" {
 		return nil
 	}
+	klog.Infof("deleting Windows iSCSI target: endpoint=%s targetName=%q", b.endpointURL(), targetName)
 	s := fmt.Sprintf(`
 $targetName = '%s'
 $target = Get-IscsiServerTarget -ComputerName $IscsiTargetComputerName -TargetName $targetName -ErrorAction SilentlyContinue
@@ -450,7 +470,11 @@ if ($target) {
 @{ ok = $true }
 `, escapePS(targetName))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows iSCSI target deleted or already absent: endpoint=%s targetName=%q", b.endpointURL(), targetName)
+	return nil
 }
 
 func (b *WinRMBackend) GetVolumeByName(ctx context.Context, name, parentDir string) (bool, string, int64, string, string, int32, error) {

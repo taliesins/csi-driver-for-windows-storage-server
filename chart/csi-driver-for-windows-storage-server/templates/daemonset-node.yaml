@@ -28,36 +28,6 @@ spec:
         kubernetes.io/os: linux
       serviceAccountName: {{ include "csi-driver-for-windows-storage-server.nodeServiceAccountName" $root }}
       containers:
-        - name: liveness-probe
-          image: {{ $root.Values.sidecars.livenessProbe.image | quote }}
-          args:
-            - --csi-address=/csi/csi.sock
-            - --probe-timeout=3s
-            - --health-port={{ $driver.livenessPort }}
-            - --v={{ $root.Values.sidecars.logLevel }}
-          ports:
-            - containerPort: {{ $driver.livenessPort }}
-              name: healthz
-              protocol: TCP
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-        - name: node-driver-registrar
-          image: {{ $root.Values.sidecars.nodeDriverRegistrar.image | quote }}
-          args:
-            - --v={{ $root.Values.sidecars.logLevel }}
-            - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path=/var/lib/kubelet/plugins/{{ $driver.name }}/csi.sock
-          env:
-            - name: KUBE_NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-            - name: registration-dir
-              mountPath: /registration
         - name: node-driver
           securityContext:
             privileged: true
@@ -74,7 +44,11 @@ spec:
             {{- end }}
             - --mode=node
             - --drivername={{ $driver.name }}
-            - --v={{ $root.Values.sidecars.logLevel }}
+            - --debug={{ $root.Values.debug }}
+            - --kubernetes-integration=true
+            - --liveness-port={{ $driver.livenessPort }}
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/{{ $driver.name }}/csi.sock
+            - --v={{ $root.Values.logLevel }}
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
@@ -87,6 +61,8 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
             - name: mountpoint-dir
               mountPath: /var/lib/kubelet
               mountPropagation: Bidirectional
@@ -104,6 +80,10 @@ spec:
             {{- end }}
             - name: csi-run-dir
               mountPath: /var/run/{{ $driver.name }}
+          ports:
+            - containerPort: {{ $driver.livenessPort }}
+              name: healthz
+              protocol: TCP
       volumes:
         - name: socket-dir
           hostPath:

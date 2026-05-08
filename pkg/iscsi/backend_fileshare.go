@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	klog "k8s.io/klog/v2"
 )
 
 func psStringArray(values []string) string {
@@ -187,23 +189,33 @@ func splitCSVParam(value string) []string {
 }
 
 func (b *WinRMBackend) MountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	klog.Infof("mounting Windows file-share VHDX: endpoint=%s vhdxPath=%q mountPath=%q", b.endpointURL(), vhdxPath, mountPath)
 	s := fmt.Sprintf(`
 %s
 Mount-CsiFileShareVirtualDisk '%s' '%s'
 @{ ok=$true }
 `, fileShareVHDXPS, escapePS(vhdxPath), escapePS(mountPath))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows file-share VHDX mounted: endpoint=%s vhdxPath=%q mountPath=%q", b.endpointURL(), vhdxPath, mountPath)
+	return nil
 }
 
 func (b *WinRMBackend) UnmountFileShareVirtualDisk(ctx context.Context, vhdxPath, mountPath string) error {
+	klog.Infof("unmounting Windows file-share VHDX: endpoint=%s vhdxPath=%q mountPath=%q", b.endpointURL(), vhdxPath, mountPath)
 	s := fmt.Sprintf(`
 %s
 Dismount-CsiFileShareVirtualDisk '%s' '%s'
 @{ ok=$true }
 `, fileShareVHDXPS, escapePS(vhdxPath), escapePS(mountPath))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows file-share VHDX unmounted: endpoint=%s vhdxPath=%q mountPath=%q", b.endpointURL(), vhdxPath, mountPath)
+	return nil
 }
 
 func (b *WinRMBackend) CreateNfsShare(ctx context.Context, name, parentDir string, sizeBytes int64, clients []string, opts ...NfsShareOptions) (VolumeInfo, error) {
@@ -223,6 +235,7 @@ func (b *WinRMBackend) CreateNfsShare(ctx context.Context, name, parentDir strin
 	if opt.AllowRootAccess != nil {
 		allowRootAccess = *opt.AllowRootAccess
 	}
+	klog.Infof("creating or reusing Windows NFS share: endpoint=%s name=%q parentDir=%q sizeBytes=%d clients=%q", b.endpointURL(), name, parentDir, sizeBytes, clients)
 	s := fmt.Sprintf(`
 Import-Module NFS -ErrorAction Stop
 $name = '%s'
@@ -259,6 +272,7 @@ foreach ($client in $clients) {
 		}
 		out.CapacityBytes = actual
 	}
+	klog.Infof("Windows NFS share ready: endpoint=%s name=%q server=%q exportPath=%q path=%q capacityBytes=%d", b.endpointURL(), out.Name, out.NfsServer, out.NfsExportPath, out.VHDXPath, out.CapacityBytes)
 	return VolumeInfo{
 		VolumeName:    out.Name,
 		Protocol:      ProtocolNFS,
@@ -305,6 +319,7 @@ if (-not $share) {
 }
 
 func (b *WinRMBackend) DeleteNfsShare(ctx context.Context, name, path string) error {
+	klog.Infof("deleting Windows NFS share: endpoint=%s name=%q path=%q", b.endpointURL(), name, path)
 	s := fmt.Sprintf(`
 Import-Module NFS -ErrorAction Stop
 %s
@@ -341,7 +356,11 @@ if ($path -and (Test-Path -LiteralPath $path)) {
 @{ ok=$true }
 `, fileShareVHDXPS, escapePS(name), escapePS(path))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows NFS share deleted or already absent: endpoint=%s name=%q path=%q", b.endpointURL(), name, path)
+	return nil
 }
 
 func (b *WinRMBackend) CreateSmbShare(ctx context.Context, name, parentDir string, sizeBytes int64, fullAccess, changeAccess, readAccess []string, opts ...SmbShareOptions) (VolumeInfo, error) {
@@ -350,6 +369,7 @@ func (b *WinRMBackend) CreateSmbShare(ctx context.Context, name, parentDir strin
 		changeAccess = []string{"Everyone"}
 	}
 	opt := firstSmbShareOptions(opts)
+	klog.Infof("creating or reusing Windows SMB share: endpoint=%s name=%q parentDir=%q sizeBytes=%d fullAccess=%q changeAccess=%q readAccess=%q", b.endpointURL(), name, parentDir, sizeBytes, fullAccess, changeAccess, readAccess)
 	s := fmt.Sprintf(`
 Import-Module SmbShare -ErrorAction Stop
 $name = '%s'
@@ -387,6 +407,7 @@ if (-not $share) {
 		}
 		out.CapacityBytes = actual
 	}
+	klog.Infof("Windows SMB share ready: endpoint=%s name=%q server=%q share=%q path=%q capacityBytes=%d", b.endpointURL(), out.Name, out.SmbServer, out.SmbShareName, out.VHDXPath, out.CapacityBytes)
 	return VolumeInfo{VolumeName: out.Name, Protocol: ProtocolSMB, SmbServer: out.SmbServer, SmbShareName: out.SmbShareName, VHDXPath: out.VHDXPath, SharePath: out.VHDXPath, SizeBytes: out.SizeBytes, CapacityBytes: out.CapacityBytes}, nil
 }
 
@@ -423,6 +444,7 @@ if (-not $share) {
 }
 
 func (b *WinRMBackend) DeleteSmbShare(ctx context.Context, name, path string) error {
+	klog.Infof("deleting Windows SMB share: endpoint=%s name=%q path=%q", b.endpointURL(), name, path)
 	s := fmt.Sprintf(`
 Import-Module SmbShare -ErrorAction Stop
 %s
@@ -459,7 +481,11 @@ if ($path -and (Test-Path -LiteralPath $path)) {
 @{ ok=$true }
 `, fileShareVHDXPS, escapePS(name), escapePS(path))
 	var out map[string]any
-	return b.runPS(ctx, s, &out)
+	if err := b.runPS(ctx, s, &out); err != nil {
+		return err
+	}
+	klog.Infof("Windows SMB share deleted or already absent: endpoint=%s name=%q path=%q", b.endpointURL(), name, path)
+	return nil
 }
 
 func (b *WinRMBackend) ResizeFileShare(ctx context.Context, path string, newSizeBytes int64) (int64, error) {

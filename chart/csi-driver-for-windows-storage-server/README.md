@@ -24,14 +24,17 @@ helm upgrade --install --create-namespace csi-driver-for-windows-storage-server 
   --set-string winrm.password='<password>'
 ```
 
-Set `drivers.windows-storage.needsIscsi=false` for NFS/SMB-only installs that do not have open-iscsi configured on every Linux node. Set `nodeOnly=true` only for static, pre-provisioned volumes where no controller-side WinRM access is required.
+The driver runs its Kubernetes provisioner, attacher, node registrar, and liveness endpoint inside the driver containers; no external helper containers are rendered. Set `drivers.windows-storage.needsIscsi=false` for NFS/SMB-only installs that do not have open-iscsi configured on every Linux node. Set `nodeOnly=true` only for static, pre-provisioned volumes where no controller-side WinRM access is required.
 
 ## Values
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | nodeOnly | bool | `false` | Install only node-side resources. Use this for static, pre-provisioned volumes when no controller or WinRM Secret is needed. |
+| debug | bool | `true` | Enable detailed driver action logging without logging secret values. Enabled by default while driver cleanup and attach flows are being hardened. |
+| logLevel | int | `2` | Driver and built-in Kubernetes controller verbosity. |
 | controller.replicas | int | `1` | Number of controller replicas. Values greater than 1 enable leader election. |
+| controller.livenessPort | int | `29752` | HTTP port used by the controller liveness probe. |
 | controller.leaderElection.leaseDuration | string | `"15s"` | Kubernetes Lease duration used when controller.replicas is greater than 1. |
 | controller.leaderElection.renewDeadline | string | `"10s"` | Kubernetes Lease renew deadline used when controller.replicas is greater than 1. |
 | controller.leaderElection.retryPeriod | string | `"2s"` | Kubernetes Lease retry period used when controller.replicas is greater than 1. |
@@ -48,18 +51,13 @@ Set `drivers.windows-storage.needsIscsi=false` for NFS/SMB-only installs that do
 | drivers.windows-storage.name | string | `"windows-storage.csi.windows.microsoft.com"` | CSI driver name advertised to Kubernetes. |
 | drivers.windows-storage.attachRequired | bool | `true` | Whether Kubernetes should use ControllerPublishVolume before node staging/publishing. |
 | drivers.windows-storage.needsIscsi | bool | `true` | Enable iSCSI host integration. When true, the node plugin reads the open-iscsi initiator from node.initiatorNamePath; set false for NFS/SMB-only installs. |
-| drivers.windows-storage.livenessPort | int | `29753` | HTTP port used by the liveness probe sidecar. |
-| sidecars.logLevel | int | `2` | Verbosity passed to CSI sidecars. |
-| sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v3.6.2"` | CSI external-provisioner image. |
-| sidecars.attacher.image | string | `"registry.k8s.io/sig-storage/csi-attacher:v4.4.2"` | CSI external-attacher image. |
-| sidecars.nodeDriverRegistrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.8.0"` | CSI node-driver-registrar image. |
-| sidecars.livenessProbe.image | string | `"registry.k8s.io/sig-storage/livenessprobe:v2.10.0"` | CSI livenessprobe image. |
+| drivers.windows-storage.livenessPort | int | `29753` | HTTP port used by the node liveness probe. |
 | image.repository | string | `"ghcr.io/taliesins/csi-driver-for-windows-storage-server"` | Driver image repository. |
 | image.pullPolicy | string | `"IfNotPresent"` | Driver image pull policy. |
 | image.tag | string | `""` | Driver image tag. Defaults to chart appVersion when empty. |
 | nameOverride | string | `""` | Override the chart name suffix. |
 | fullnameOverride | string | `""` | Override the fully qualified resource name. |
-| imagePullSecrets | list | `[]` | Optional image pull secrets for the driver and sidecars. |
+| imagePullSecrets | list | `[]` | Optional image pull secrets for the driver. |
 | winrm.host | string | `""` | Windows storage server hostname or IP address reachable from the controller. |
 | winrm.port | int | `5986` | WinRM port. |
 | winrm.tls | bool | `true` | Use HTTPS for WinRM. |
@@ -70,4 +68,3 @@ Set `drivers.windows-storage.needsIscsi=false` for NFS/SMB-only installs that do
 | winrm.existingSecret | string | `""` | Existing Secret containing WINRM_USER and WINRM_PASSWORD keys. |
 | winrm.user | string | `""` | WinRM username used when winrm.existingSecret is empty. |
 | winrm.password | string | `""` | WinRM password used when winrm.existingSecret is empty. |
-

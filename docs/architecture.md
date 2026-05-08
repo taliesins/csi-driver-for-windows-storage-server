@@ -11,14 +11,14 @@ graph TB
         end
 
         subgraph ControllerPod["Controller Pod<br/>(deployment-controller.yaml)"]
-            Provisioner["csi-provisioner"]
-            Attacher["csi-attacher"]
+            InternalProvisioner["Built-in Provisioner<br/>(internal_kubernetes.go)"]
+            InternalAttacher["Built-in Attacher<br/>(internal_kubernetes.go)"]
             Controller["ControllerServer<br/>(controllerserver.go)"]
             WinRMBackend["WinRMBackend<br/>(backend_winrm.go)"]
         end
 
         subgraph NodePod["Node Pod<br/>(daemonset-node.yaml)"]
-            Registrar["node-driver-registrar"]
+            Registrar["Built-in Node Registrar<br/>(internal_kubernetes.go)"]
             NodeServer["NodeServer<br/>(nodeserver.go)"]
             iSCSILib["iscsilib<br/>(iscsi.go / iscsiadm.go)"]
             Mounter["mount-utils<br/>(FormatAndMount / ResizeFs)"]
@@ -31,11 +31,11 @@ graph TB
     end
 
     APIServer --> CSIDriver
-    APIServer --> Provisioner
-    APIServer --> Attacher
+    APIServer --> InternalProvisioner
+    APIServer --> InternalAttacher
     APIServer --> Registrar
-    Provisioner ==>|CSI gRPC| Controller
-    Attacher ==>|CSI gRPC| Controller
+    InternalProvisioner ==>|in-process CSI call| Controller
+    InternalAttacher ==>|in-process CSI call| Controller
     APIServer ==>|CSI gRPC via kubelet| NodeServer
 
     Controller -->|WinRM (HTTP-ES)| WinRMBackend
@@ -71,6 +71,7 @@ graph LR
     subgraph pkg_iscsi["pkg/iscsi"]
         Driver["driver.go<br/>(Driver + Backend wiring)"]
         Identity["identityserver.go<br/>(GetPluginInfo, Probe)"]
+        InternalKubernetes["internal_kubernetes.go<br/>(Provisioner, Attacher, Registrar, Health)"]
         Controller["controllerserver.go<br/>(Create/Delete/Publish/Expand/Snapshot)"]
         Node["nodeserver.go<br/>(Stage/Publish/Expand/Stats)"]
         Server["server.go<br/>(NonBlockingGRPCServer)"]
@@ -86,6 +87,7 @@ graph LR
 
     Main --> Driver
     Driver --> Identity
+    Driver --> InternalKubernetes
     Driver --> Controller
     Driver --> Node
     Driver --> Server
@@ -103,12 +105,14 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant K as Kubernetes
-    participant A as csi-attacher
+    participant P as Built-in Provisioner
+    participant A as Built-in Attacher
     participant C as ControllerServer
     participant W as WinRMBackend
     participant WS as Windows iSCSI Server
 
-    K->>C: CreateVolume(req)<br/>(via csi-provisioner)
+    K->>P: PVC pending for driver
+    P->>C: CreateVolume(req)
     C->>C: validate params<br/>(targetPortal)
     C->>W: resolve vhdxParentPath<br/>(optional)
     C->>C: choose targetName<br/>(iqnPrefix optional)

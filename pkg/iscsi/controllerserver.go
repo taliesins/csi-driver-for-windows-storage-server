@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -144,6 +145,16 @@ func getStringParam(params map[string]string, key string) (string, bool) {
 	v = strings.TrimSpace(v)
 	return v, ok && v != ""
 }
+
+func sortedMapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func requiredBytesFromRange(cr *csi.CapacityRange, minGiB int64) (int64, error) {
 	min := minGiB << 30
 	if cr == nil {
@@ -956,10 +967,15 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if err != nil {
 		return nil, err
 	}
+	klog.Infof("CreateVolume request: name=%q protocol=%s capabilityCount=%d contentSource=%t", req.GetName(), protocolForLog(protocol), len(req.GetVolumeCapabilities()), req.GetVolumeContentSource() != nil)
+	cs.debugf("CreateVolume parameters: name=%q protocol=%s parameterKeys=%q", req.GetName(), protocolForLog(protocol), sortedMapKeys(params))
 	for _, vc := range req.GetVolumeCapabilities() {
 		if !cs.supportsAccessModeForProtocol(vc.GetAccessMode().GetMode(), protocol) {
 			return nil, status.Error(codes.InvalidArgument, "access mode is not supported by this driver")
 		}
+	}
+	if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() == nil {
+		return nil, status.Error(codes.InvalidArgument, "only snapshot volume content sources are supported")
 	}
 
 	if protocol == ProtocolNFS {
@@ -1046,7 +1062,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			VHDXPath:     exportedPath,
 			SizeBytes:    vi.SizeBytes,
 		})
-		return &csi.CreateVolumeResponse{
+		resp := &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
 				VolumeId:      vid,
 				CapacityBytes: vi.SizeBytes,
@@ -1058,7 +1074,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				}, params),
 				ContentSource: req.GetVolumeContentSource(),
 			},
-		}, nil
+		}
+		klog.Infof("CreateVolume completed: name=%q protocol=%s source=snapshot targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, targetName, targetIQN, lun, exportedPath, vi.SizeBytes)
+		return resp, nil
 	}
 
 	// Idempotency: already exists?
@@ -1096,7 +1114,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			VHDXPath:     vhdxPath,
 			SizeBytes:    existingSize,
 		})
-		return &csi.CreateVolumeResponse{
+		resp := &csi.CreateVolumeResponse{
 			Volume: &csi.Volume{
 				VolumeId:      vid,
 				CapacityBytes: existingSize,
@@ -1106,7 +1124,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 					"lun":          strconv.Itoa(int(existingLUN)),
 				}, params),
 			},
-		}, nil
+		}
+		klog.Infof("CreateVolume completed: name=%q protocol=%s existing=true targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, existingTargetName, targetIQN, existingLUN, vhdxPath, existingSize)
+		return resp, nil
 	}
 
 	// Create new VHDX and map it
@@ -1138,7 +1158,7 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		VHDXPath:     vhdxPath,
 		SizeBytes:    actual,
 	})
-	return &csi.CreateVolumeResponse{
+	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: actual,
@@ -1148,7 +1168,9 @@ func (cs *ControllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				"lun":          strconv.Itoa(int(lun)),
 			}, params),
 		},
-	}, nil
+	}
+	klog.Infof("CreateVolume completed: name=%q protocol=%s existing=false targetName=%q targetIQN=%q lun=%d vhdxPath=%q capacityBytes=%d", volName, ProtocolISCSI, targetName, targetIQN, lun, vhdxPath, actual)
+	return resp, nil
 }
 
 func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -1174,6 +1196,7 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 		return nil, err
 	}
 	name := req.GetName()
+	klog.Infof("CreateVolume file-share request: name=%q protocol=%s shareBackend=%q parentDir=%q requestedBytes=%d", name, ProtocolNFS, shareBackend, parentDir, size)
 	if shareBackend == fileShareBackendVHDX {
 		return cs.createVHDXBackedNfsVolume(ctx, req, name, parentDir, nfsServer, size, nfsOpts)
 	}
@@ -1196,14 +1219,16 @@ func (cs *ControllerServer) createNfsVolume(ctx context.Context, req *csi.Create
 	capacityBytes := maxInt64(info.CapacityBytes, size)
 	volumeID := applyNfsOptionsToVolumeID(fileShareVolumeID(name, ProtocolNFS, shareBackend, info, capacityBytes), nfsOpts)
 	vid := EncodeVolumeID(volumeID)
-	return &csi.CreateVolumeResponse{
+	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: capacityBytes,
 			VolumeContext: volumeContextForVolumeID(volumeID),
 			ContentSource: req.GetVolumeContentSource(),
 		},
-	}, nil
+	}
+	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q exportPath=%q sharePath=%q capacityBytes=%d", name, ProtocolNFS, shareBackend, exists, info.NfsServer, info.NfsExportPath, info.SharePath, capacityBytes)
+	return resp, nil
 }
 
 func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, nfsServer string, size int64, nfsOpts NfsShareOptions) (*csi.CreateVolumeResponse, error) {
@@ -1213,6 +1238,7 @@ func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *
 		return nil, err
 	}
 	sharePath := joinWindowsPath(shareParentDir, name)
+	klog.Infof("CreateVolume VHDX-backed file-share request: name=%q protocol=%s sharePath=%q vhdxParentDir=%q requestedBytes=%d", name, ProtocolNFS, sharePath, vhdxParentDir, size)
 	exists, info, err := cs.Driver.backend.GetNfsShare(ctx, name, shareParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetNfsShare: %v", err)
@@ -1271,14 +1297,16 @@ func (cs *ControllerServer) createVHDXBackedNfsVolume(ctx context.Context, req *
 	capacityBytes := maxInt64(info.CapacityBytes, size)
 	volumeID := applyNfsOptionsToVolumeID(fileShareVolumeID(name, ProtocolNFS, fileShareBackendVHDX, info, capacityBytes), nfsOpts)
 	vid := EncodeVolumeID(volumeID)
-	return &csi.CreateVolumeResponse{
+	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: capacityBytes,
 			VolumeContext: volumeContextForVolumeID(volumeID),
 			ContentSource: req.GetVolumeContentSource(),
 		},
-	}, nil
+	}
+	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q exportPath=%q sharePath=%q vhdxPath=%q capacityBytes=%d", name, ProtocolNFS, fileShareBackendVHDX, exists, info.NfsServer, info.NfsExportPath, info.SharePath, info.VHDXPath, capacityBytes)
+	return resp, nil
 }
 
 func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -1304,6 +1332,7 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 		return nil, err
 	}
 	name := req.GetName()
+	klog.Infof("CreateVolume file-share request: name=%q protocol=%s shareBackend=%q parentDir=%q requestedBytes=%d", name, ProtocolSMB, shareBackend, parentDir, size)
 	if shareBackend == fileShareBackendVHDX {
 		return cs.createVHDXBackedSmbVolume(ctx, req, name, parentDir, smbServer, size, smbOpts)
 	}
@@ -1329,7 +1358,7 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 	}
 	capacityBytes := maxInt64(info.CapacityBytes, size)
 	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolSMB, shareBackend, info, capacityBytes))
-	return &csi.CreateVolumeResponse{
+	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: capacityBytes,
@@ -1340,7 +1369,9 @@ func (cs *ControllerServer) createSmbVolume(ctx context.Context, req *csi.Create
 			}),
 			ContentSource: req.GetVolumeContentSource(),
 		},
-	}, nil
+	}
+	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q share=%q sharePath=%q capacityBytes=%d", name, ProtocolSMB, shareBackend, exists, info.SmbServer, info.SmbShareName, info.SharePath, capacityBytes)
+	return resp, nil
 }
 
 func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *csi.CreateVolumeRequest, name, shareParentDir, smbServer string, size int64, smbOpts SmbShareOptions) (*csi.CreateVolumeResponse, error) {
@@ -1350,6 +1381,7 @@ func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *
 		return nil, err
 	}
 	sharePath := joinWindowsPath(shareParentDir, name)
+	klog.Infof("CreateVolume VHDX-backed file-share request: name=%q protocol=%s sharePath=%q vhdxParentDir=%q requestedBytes=%d", name, ProtocolSMB, sharePath, vhdxParentDir, size)
 	exists, info, err := cs.Driver.backend.GetSmbShare(ctx, name, shareParentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetSmbShare: %v", err)
@@ -1411,7 +1443,7 @@ func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *
 	}
 	capacityBytes := maxInt64(info.CapacityBytes, size)
 	vid := EncodeVolumeID(fileShareVolumeID(name, ProtocolSMB, fileShareBackendVHDX, info, capacityBytes))
-	return &csi.CreateVolumeResponse{
+	resp := &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:      vid,
 			CapacityBytes: capacityBytes,
@@ -1422,7 +1454,9 @@ func (cs *ControllerServer) createVHDXBackedSmbVolume(ctx context.Context, req *
 			}),
 			ContentSource: req.GetVolumeContentSource(),
 		},
-	}, nil
+	}
+	klog.Infof("CreateVolume completed: name=%q protocol=%s shareBackend=%q existing=%t server=%q share=%q sharePath=%q vhdxPath=%q capacityBytes=%d", name, ProtocolSMB, fileShareBackendVHDX, exists, info.SmbServer, info.SmbShareName, info.SharePath, info.VHDXPath, capacityBytes)
+	return resp, nil
 }
 
 func maxInt64(a, b int64) int64 {
@@ -1441,6 +1475,19 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func protocolForLog(protocol Protocol) string {
+	if strings.TrimSpace(string(protocol)) == "" {
+		return string(ProtocolISCSI)
+	}
+	return string(protocol)
+}
+
+func (cs *ControllerServer) debugf(format string, args ...any) {
+	if cs != nil && cs.Driver != nil && cs.Driver.debug {
+		klog.Infof("controller debug: "+format, args...)
+	}
+}
+
 func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id is required")
@@ -1451,6 +1498,7 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		klog.Warningf("DeleteVolume: decode error: %v", err)
 		return &csi.DeleteVolumeResponse{}, nil
 	}
+	klog.Infof("DeleteVolume request: protocol=%s name=%q targetName=%q targetIQN=%q vhdxPath=%q sharePath=%q shareBackend=%q", protocolForLog(decoded.Protocol), decoded.Name, id.TargetName, id.TargetIQN, firstNonEmpty(decoded.VHDXPath, id.VHDXPath), decoded.SharePath, decoded.ShareBackend)
 	switch decoded.Protocol {
 	case ProtocolNFS:
 		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
@@ -1467,6 +1515,7 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		if err := cs.Driver.backend.DeleteNfsShare(ctx, decoded.Name, sharePath); err != nil {
 			return nil, status.Errorf(codes.Internal, "DeleteNfsShare: %v", err)
 		}
+		klog.Infof("DeleteVolume completed: protocol=%s name=%q sharePath=%q vhdxPath=%q", ProtocolNFS, decoded.Name, sharePath, decoded.VHDXPath)
 		return &csi.DeleteVolumeResponse{}, nil
 	case ProtocolSMB:
 		sharePath := firstNonEmpty(decoded.SharePath, decoded.VHDXPath)
@@ -1483,6 +1532,7 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		if err := cs.Driver.backend.DeleteSmbShare(ctx, decoded.Name, sharePath); err != nil {
 			return nil, status.Errorf(codes.Internal, "DeleteSmbShare: %v", err)
 		}
+		klog.Infof("DeleteVolume completed: protocol=%s name=%q sharePath=%q vhdxPath=%q", ProtocolSMB, decoded.Name, sharePath, decoded.VHDXPath)
 		return &csi.DeleteVolumeResponse{}, nil
 	}
 	// Unmap before deleting the backing VHDX. Returning errors keeps the PV
@@ -1506,6 +1556,7 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 			}
 		}
 	}
+	klog.Infof("DeleteVolume completed: protocol=%s name=%q targetName=%q targetIQN=%q vhdxPath=%q", ProtocolISCSI, id.VolumeName, id.TargetName, id.TargetIQN, id.VHDXPath)
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
@@ -1527,6 +1578,7 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 		return nil, status.Error(codes.FailedPrecondition, "access mode is not supported by this driver")
 	}
 	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
+		klog.Infof("ControllerPublishVolume: file-share volume ready for node publish: protocol=%s node=%q volumeName=%q", decoded.Protocol, req.GetNodeId(), decoded.Name)
 		return &csi.ControllerPublishVolumeResponse{
 			PublishContext: volumeContextForVolumeID(decoded),
 		}, nil
@@ -1542,9 +1594,11 @@ func (cs *ControllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	if err := cs.configureTargetChapFromSecrets(ctx, targetName, req.GetSecrets()); err != nil {
 		return nil, err
 	}
+	klog.Infof("ControllerPublishVolume: allowing iSCSI node initiator: node=%q targetName=%q targetIQN=%q targetPortal=%q lun=%d", initiatorIQN, targetName, id.TargetIQN, id.TargetPortal, id.LUN)
 	if err := cs.Driver.backend.AllowInitiator(ctx, targetName, initiatorIQN); err != nil {
 		return nil, status.Errorf(codes.Internal, "AllowInitiator: %v", err)
 	}
+	klog.Infof("ControllerPublishVolume: iSCSI node initiator allowed: node=%q targetName=%q targetIQN=%q targetPortal=%q lun=%d", initiatorIQN, targetName, id.TargetIQN, id.TargetPortal, id.LUN)
 	return &csi.ControllerPublishVolumeResponse{
 		PublishContext: map[string]string{
 			"targetPortal": id.TargetPortal,
@@ -1569,12 +1623,15 @@ func (cs *ControllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 	if decoded.Protocol == ProtocolNFS || decoded.Protocol == ProtocolSMB {
+		klog.Infof("ControllerUnpublishVolume: file-share detach is a no-op: protocol=%s node=%q volumeName=%q", decoded.Protocol, req.GetNodeId(), decoded.Name)
 		return &csi.ControllerUnpublishVolumeResponse{}, nil
 	}
 	if targetName := targetNameFromVolID(id); targetName != "" {
+		klog.Infof("ControllerUnpublishVolume: denying iSCSI node initiator: node=%q targetName=%q targetIQN=%q", req.GetNodeId(), targetName, id.TargetIQN)
 		if err := cs.Driver.backend.DenyInitiator(ctx, targetName, req.GetNodeId()); err != nil {
 			return nil, status.Errorf(codes.Internal, "DenyInitiator: %v", err)
 		}
+		klog.Infof("ControllerUnpublishVolume: iSCSI node initiator denied: node=%q targetName=%q targetIQN=%q", req.GetNodeId(), targetName, id.TargetIQN)
 	} else {
 		klog.Warningf("DenyInitiator: volume_id is missing target name")
 	}
@@ -1634,6 +1691,7 @@ func (cs *ControllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacit
 	if err := validateWindowsPathParam("vhdxParentPath", vhdxParentDir, false); err != nil {
 		return nil, err
 	}
+	klog.Infof("GetCapacity request: protocol=%s parentDir=%q shareParentPath=%q vhdxParentPath=%q", protocolForLog(protocol), parentDir, shareParentDir, vhdxParentDir)
 	free, err := cs.Driver.backend.GetDirectoryFreeCapacity(ctx, parentDir)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "GetDirectoryFreeCapacity: %v", err)
@@ -1669,12 +1727,13 @@ func (cs *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		return nil, status.Errorf(codes.InvalidArgument, "source volume %q does not include a backend path", req.GetSourceVolumeId())
 	}
 	desc := strings.TrimSpace(req.GetName())
+	klog.Infof("CreateSnapshot request: sourceVolumeID=%q sourcePath=%q name=%q", req.GetSourceVolumeId(), sourcePath, desc)
 	snap, err := cs.Driver.backend.CreateSnapshot(ctx, sourcePath, desc)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "CreateSnapshot: %v", err)
 	}
 	id := encodeSnapID(snapID{SnapshotID: snap.SnapshotID, OriginalPath: snap.OriginalPath})
-	return &csi.CreateSnapshotResponse{
+	resp := &csi.CreateSnapshotResponse{
 		Snapshot: &csi.Snapshot{
 			SnapshotId:     id,
 			SourceVolumeId: req.GetSourceVolumeId(),
@@ -1682,7 +1741,9 @@ func (cs *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 			SizeBytes:      snap.SizeBytes,
 			ReadyToUse:     true,
 		},
-	}, nil
+	}
+	klog.Infof("CreateSnapshot completed: snapshotID=%q sourcePath=%q sizeBytes=%d", snap.SnapshotID, sourcePath, snap.SizeBytes)
+	return resp, nil
 }
 
 func (cs *ControllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
@@ -1696,6 +1757,7 @@ func (cs *ControllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 	if err := cs.Driver.backend.DeleteSnapshot(ctx, sid.SnapshotID); err != nil {
 		klog.Warningf("DeleteSnapshot: %v", err)
 	}
+	klog.Infof("DeleteSnapshot completed: snapshotID=%q", sid.SnapshotID)
 	return &csi.DeleteSnapshotResponse{}, nil
 }
 
@@ -1780,6 +1842,7 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 			return nil, status.Errorf(codes.InvalidArgument, "volume %q does not include a backing path", req.GetVolumeId())
 		}
 		if decoded.ShareBackend == fileShareBackendVHDX {
+			klog.Infof("ControllerExpandVolume: resizing VHDX-backed file-share volume: protocol=%s vhdxPath=%q sharePath=%q requestedBytes=%d", decoded.Protocol, decoded.VHDXPath, decoded.SharePath, want)
 			actual, err := cs.Driver.backend.ResizeVirtualDisk(ctx, decoded.VHDXPath, want)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "ResizeVirtualDisk: %v", err)
@@ -1792,6 +1855,7 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 				NodeExpansionRequired: false,
 			}, nil
 		}
+		klog.Infof("ControllerExpandVolume: resizing directory-backed file-share volume: protocol=%s path=%q requestedBytes=%d", decoded.Protocol, decoded.VHDXPath, want)
 		actual, err := cs.Driver.backend.ResizeFileShare(ctx, decoded.VHDXPath, want)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "ResizeFileShare: %v", err)
@@ -1801,6 +1865,7 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 			NodeExpansionRequired: false,
 		}, nil
 	}
+	klog.Infof("ControllerExpandVolume: resizing iSCSI volume: vhdxPath=%q targetName=%q requestedBytes=%d", id.VHDXPath, targetNameFromVolID(id), want)
 	actual, err := cs.Driver.backend.ResizeVirtualDisk(ctx, id.VHDXPath, want)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "ResizeVirtualDisk: %v", err)

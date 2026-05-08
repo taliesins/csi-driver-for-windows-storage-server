@@ -14,6 +14,9 @@ rules:
     resources: ["persistentvolumes", "persistentvolumeclaims", "events"]
     verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
   - apiGroups: [""]
+    resources: ["persistentvolumes/finalizers"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
     resources: ["nodes", "secrets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
@@ -25,6 +28,9 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["volumeattachments/status"]
     verbs: ["get", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments/finalizers"]
+    verbs: ["update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -56,45 +62,6 @@ spec:
     spec:
       serviceAccountName: csi-windows-storage-controller
       containers:
-        - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.2
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-          args:
-            - --csi-address=/csi/csi.sock
-            - --v=2
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-        - name: csi-attacher
-          image: registry.k8s.io/sig-storage/csi-attacher:v4.4.2
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-          args:
-            - --csi-address=/csi/csi.sock
-            - --v=2
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
-        - name: liveness-probe
-          image: registry.k8s.io/sig-storage/livenessprobe:v2.10.0
-          securityContext:
-            allowPrivilegeEscalation: false
-            runAsNonRoot: true
-          args:
-            - --csi-address=/csi/csi.sock
-            - --probe-timeout=3s
-            - --health-port=29752
-            - --v=2
-          ports:
-            - containerPort: 29752
-              name: healthz
-              protocol: TCP
-          volumeMounts:
-            - name: socket-dir
-              mountPath: /csi
         - name: windows-storage
           image: ghcr.io/taliesins/csi-driver-for-windows-storage-server:0.2.0
           imagePullPolicy: IfNotPresent
@@ -102,6 +69,9 @@ spec:
             - --endpoint=$(CSI_ENDPOINT)
             - --mode=controller
             - --drivername=windows-storage.csi.windows.microsoft.com
+            - --kubernetes-integration=true
+            - --controller-publish=true
+            - --liveness-port=29752
             - --v=5
           env:
             - name: CSI_ENDPOINT
@@ -160,6 +130,10 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+          ports:
+            - containerPort: 29752
+              name: healthz
+              protocol: TCP
       volumes:
         - name: socket-dir
           emptyDir: {}
