@@ -1,3 +1,15 @@
+## [1.4.0](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.3.1...v1.4.0) (2026-05-08)
+
+### Features
+
+* Do not use multiple containers ([1602303](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/1602303dc053f759280994fa388e0e122de81244))
+* Do not use multiple containers ([a82e4ab](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/a82e4abb09de47a9a3ba1f8638eb9090e709b9c3))
+
+### Bug Fixes
+
+* CodeRabbit ([41114aa](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/41114aab5813c7cd891c38fc7f1f022316dde631))
+* CodeRabbit suggestions ([c31a9b4](https://github.com/taliesins/csi-driver-for-windows-storage-server/commit/c31a9b4ab1ffa2cce55eff66b9e475fcc8cb502f))
+
 ## [1.3.1](https://github.com/taliesins/csi-driver-for-windows-storage-server/compare/v1.3.0...v1.3.1) (2026-05-08)
 
 ### Bug Fixes
